@@ -52,7 +52,7 @@ if __name__ == "__main__":
 	parser.add_argument("--policy_noise", default=0.2)              # Noise added to target policy during critic update
 	parser.add_argument("--noise_clip", default=0.5)                # Range to clip target policy noise
 	parser.add_argument("--policy_freq", default=2, type=int)       # Frequency of delayed policy updates
-	parser.add_argument("--run_name", default="Tier_2")       # Frequency of delayed policy updates
+	parser.add_argument("--run_name", default="single_row")       # Frequency of delayed policy updates
 	parser.add_argument("--load_model", default="")    # Model load file name, "" doesn't load, "default" uses file_name
 	parser.add_argument("--load_steps", default=0)
 	args = parser.parse_args()
@@ -83,7 +83,7 @@ if __name__ == "__main__":
 	# torch.manual_seed(args.seed)
 	# np.random.seed(args.seed)
 	
-	state_dim = 14
+	state_dim = 28
 	action_dim = 2
 	max_action = 1.0
 	rewards = np.ones(10)
@@ -131,10 +131,10 @@ if __name__ == "__main__":
 	total_timesteps = 0 + args.load_steps
 	expl_min = 0.1
 	expl_noise = args.expl_noise
-	expl_decay_steps = 30000
+	expl_decay_steps = 70000
 
 
-	for t in range(200000):
+	for t in range(500000):
 		
 		episode_timesteps += 1
 		total_timesteps += 1

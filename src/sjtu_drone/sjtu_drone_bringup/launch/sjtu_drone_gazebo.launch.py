@@ -53,7 +53,7 @@ def generate_launch_description():
 
     world_file = os.path.join(
         get_package_share_directory("f4_project"),
-        "worlds", "empty_sped_up.world"
+        "worlds", "empty.world"
     )
 
     def launch_gzclient(context, *args, **kwargs):

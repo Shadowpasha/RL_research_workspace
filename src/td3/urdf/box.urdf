@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<robot name="simple_box">
+
+  <link name="box_link">
+    <visual>
+      <geometry>
+        <!-- Dimensions are in meters: 40cm = 0.4m -->
+        <box size="0.4 0.4 0.4"/>
+      </geometry>
+      <material name="blue">
+        <color rgba="0 0 1 1"/> <!-- Blue color (RGBA: Red Green Blue Alpha) -->
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <!-- Collision geometry should match visual geometry -->
+        <box size="0.4 0.4 0.4"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <!-- Inertial properties are important for physics simulation -->
+      <!-- Mass in kg, origin is center of mass -->
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1.0"/> <!-- Example mass, you can adjust this -->
+      <!-- Inertia tensor for a solid box (Ixx, Iyy, Izz, Ixy, Ixz, Iyz) -->
+      <!-- For a box aligned with principal axes, Ixy=Ixz=Iyz=0 -->
+      <!-- I = (1/12) * m * (w^2 + h^2) -->
+      <!-- For a cube of side 's' and mass 'm': Ixx=Iyy=Izz = (1/12) * m * (s^2 + s^2) = (1/6) * m * s^2 -->
+      <inertia ixx="0.013333" ixy="0.0" ixz="0.0" iyy="0.013333" iyz="0.0" izz="0.013333"/>
+    </inertial>
+  </link>
+
+  <!-- Optionally, you can add a fixed joint to a world frame if you want to spawn it directly -->
+  <!-- <joint name="box_joint" type="fixed">
+    <parent link="world"/>
+    <child link="box_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint> -->
+
+</robot>

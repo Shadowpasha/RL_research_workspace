@@ -66,6 +66,6 @@ class ReplayBuffer(object):
 			self.next_state = np.load(filename + "_next_state.npy")
 			self.reward = np.load(filename + "_reward.npy")
 			self.not_done = np.load(filename + "_not_done.npy")
-			self.ptr = np.max(np.nonzero(self.state_laser))
+			self.ptr = np.max(np.nonzero(self.state))
 			print(self.ptr)
 			

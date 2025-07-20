@@ -52,12 +52,14 @@ install(
     scripts/test_velodyne_node_irl.py
     scripts/test_velodyne_node_irl_transformer.py
     scripts/train_velodyne_node_transformer_pid.py
+    scripts/train_velodyne_node_boxes.py
     scripts/train_velodyne_node.py
     scripts/train_velodyne_node_variable.py
     scripts/train_velodyne_node_pid.py
     scripts/train_velodyne_node_potential.py
     scripts/train_velodyne_node_transformer.py
     scripts/train_velodyne_node_transformer_variable.py
+    scripts/test_velodyne_node_boxes.py
     scripts/point_cloud2.py
     scripts/pid.py
     launch/multi_robot_scenario.launch.py

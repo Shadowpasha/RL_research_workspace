@@ -24,6 +24,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from pid import PID
 import os
 from std_srvs.srv import Empty
+from cv_bridge import CvBridge 
+import cv2
 
 class DroneGazeboEnv(gym.Env):
     def __init__(self):
@@ -37,8 +39,9 @@ class DroneGazeboEnv(gym.Env):
        
         rclpy.init()
         self.node = rclpy.create_node("training")
-        self.goal_range = 5.5
-        self.num_obstacles = 5
+        self.goal_range = 5
+        self.obstacle_range = 3.5
+        self.num_obstacles = 3
         
         self.vel_pub = self.node.create_publisher(Twist,'/simple_drone/cmd_vel', 10)
         self.take_pub = self.node.create_publisher(Empty_msg,'/simple_drone/takeoff', 10)
@@ -52,11 +55,11 @@ class DroneGazeboEnv(gym.Env):
         
         self.pos_sub = self.node.create_subscription(Pose,"/simple_drone/gt_pose",self.position_cb, 10)
         self.vel_sub = self.node.create_subscription(Twist,"/simple_drone/gt_vel",self.velocity_cb, 10)
-        # self.sub_disparity  = self.node.create_subscription(Image,"/camera/depth/image_raw",self.get_laser, 10)
-        self.sub_disparity_360  = self.node.create_subscription(LaserScan,"/simple_drone/scan",self.get_laser_360, qos_profile_laser)
-        self.sub_disparity  = self.node.create_subscription(LaserScan,"/realsense_scan",self.get_laser, qos_profile_laser)
-        self.sub_disparity_top  = self.node.create_subscription(LaserScan,"/realsense_scan_top",self.get_laser_top, qos_profile_laser)
-        self.sub_disparity_bottom  = self.node.create_subscription(LaserScan,"/realsense_scan_bottom",self.get_laser_bottom, qos_profile_laser)
+        self.sub_disparity  = self.node.create_subscription(Image,"/simple_drone/camera/depth/image_raw",self.get_laser, 10)
+        # self.sub_disparity_360  = self.node.create_subscription(LaserScan,"/simple_drone/scan",self.get_laser_360, qos_profile_laser)
+        # self.sub_disparity  = self.node.create_subscription(LaserScan,"/realsense_scan",self.get_laser, qos_profile_laser)
+        # self.sub_disparity_top  = self.node.create_subscription(LaserScan,"/realsense_scan_top",self.get_laser_top, qos_profile_laser)
+        # self.sub_disparity_bottom  = self.node.create_subscription(LaserScan,"/realsense_scan_bottom",self.get_laser_bottom, qos_profile_laser)
         self.pose = Pose()
         self.vel = Twist()
         self.first_reset  = True
@@ -88,7 +91,7 @@ class DroneGazeboEnv(gym.Env):
         #         'laser': spaces.Box(0.0, 1.4, shape=(30,), dtype= np.float64),
         #         'goal': spaces.Box(-8.0, 8.0,shape=(4,), dtype= np.float64)
         #             }
-        self.observation_space = spaces.Box(-8.0, 8.0, shape=(14,), dtype= np.float64)
+        self.observation_space = spaces.Box(-255.0, 255.0, shape=(28,), dtype= np.float64)
         self.laser_done_cnt = 0
         self.ep_time = time.time()
         # self.disparity_img = Image()
@@ -110,48 +113,74 @@ class DroneGazeboEnv(gym.Env):
         self.laser_ranges_bottom = np.zeros(10)
         self.laser_ranges_360 = np.zeros(20)
         self.goal_data = np.zeros(4)
+        self.extracted_row = []
 
     def get_laser(self,msg):
-        laser_ranges = msg.ranges
-        final_laser_range = []
-        final_laser_range = np.array(laser_ranges)
-        final_laser_range[np.isnan(final_laser_range)] = 5.0
-        final_laser_range[np.isinf(final_laser_range)] = 0.2
-        final_laser_range = final_laser_range/5.0
-        # print(final_laser_range)
-        # self.laser_ranges = np.roll(self.laser_ranges,1,axis=0)
-        self.laser_ranges = final_laser_range
+        # print("Got Image")
+        self.cv_bridge_instance = CvBridge()
+        depth_array = self.cv_bridge_instance.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        normalized_depth_image_display = cv2.normalize(depth_array, None, -1.0, 1.0, cv2.NORM_MINMAX, dtype=cv2.CV_32F)
+        resized_image_hwc = cv2.resize(normalized_depth_image_display, (24,24), interpolation=cv2.INTER_LINEAR)
+        self.extracted_row = resized_image_hwc[12, :]
+        for i in range(24):
+            if np.isnan(self.extracted_row[i]):
+                self.extracted_row[i] = 1.0
 
-    def get_laser_top(self,msg):
-        laser_ranges = msg.ranges
-        final_laser_range = []
-        final_laser_range = np.array(laser_ranges)
-        final_laser_range[np.isnan(final_laser_range)] = 5.0
-        final_laser_range[np.isinf(final_laser_range)] = 0.2
-        final_laser_range = final_laser_range/5.0
-        # print(final_laser_range)
-        # self.laser_ranges_top = np.roll(self.laser_ranges_top,1,axis=0)
-        self.laser_ranges_top = final_laser_range
+        # for i in range (12):
+        #     column_sum = 0
+        #     for j in range(12):
+        #         middle_row_offset = abs(j - 6)
+        #         modulation_perc = (6.0 - float(middle_row_offset))/6.0
+        #         exp_ = math.exp((1.0/2.0),10*modulation_perc)
+        #         column_sum += exp_ * resized_image_hwc[j, i]
+        #     self.extracted_row[i] = column_sum
 
-    def get_laser_bottom(self,msg):
-        laser_ranges = msg.ranges
-        final_laser_range = []
-        final_laser_range = np.array(laser_ranges)
-        final_laser_range[np.isnan(final_laser_range)] = 5.0
-        final_laser_range[np.isinf(final_laser_range)] = 0.2
-        final_laser_range = final_laser_range/5.0
-        # print(final_laser_range)
-        # self.laser_ranges_bottom = np.roll(self.laser_ranges_bottom,1,axis=0)
-        self.laser_ranges_bottom = final_laser_range
+        # cv2.imshow("array",np.array(self.extracted_row))
+        # cv2.waitKey(1)
 
-    def get_laser_360(self,msg):
-        laser_ranges = msg.ranges
-        final_laser_range = []
-        final_laser_range = np.array(laser_ranges)
-        final_laser_range[np.isinf(final_laser_range)] = 5.0
-        final_laser_range = final_laser_range/5.0
-        # self.laser_ranges_360 = np.roll(self.laser_ranges_360,1,axis=0)
-        self.laser_ranges_360 = final_laser_range
+        # print(self.extracted_row)
+
+
+        # laser_ranges = msg.ranges
+        # final_laser_range = []
+        # final_laser_range = np.array(laser_ranges)
+        # final_laser_range[np.isnan(final_laser_range)] = 5.0
+        # final_laser_range[np.isinf(final_laser_range)] = 0.2
+        # final_laser_range = final_laser_range/5.0
+        # # print(final_laser_range)
+        # # self.laser_ranges = np.roll(self.laser_ranges,1,axis=0)
+        # self.laser_ranges = final_laser_range
+
+    # def get_laser_top(self,msg):
+    #     laser_ranges = msg.ranges
+    #     final_laser_range = []
+    #     final_laser_range = np.array(laser_ranges)
+    #     final_laser_range[np.isnan(final_laser_range)] = 5.0
+    #     final_laser_range[np.isinf(final_laser_range)] = 0.2
+    #     final_laser_range = final_laser_range/5.0
+    #     # print(final_laser_range)
+    #     # self.laser_ranges_top = np.roll(self.laser_ranges_top,1,axis=0)
+    #     self.laser_ranges_top = final_laser_range
+
+    # def get_laser_bottom(self,msg):
+    #     laser_ranges = msg.ranges
+    #     final_laser_range = []
+    #     final_laser_range = np.array(laser_ranges)
+    #     final_laser_range[np.isnan(final_laser_range)] = 5.0
+    #     final_laser_range[np.isinf(final_laser_range)] = 0.2
+    #     final_laser_range = final_laser_range/5.0
+    #     # print(final_laser_range)
+    #     # self.laser_ranges_bottom = np.roll(self.laser_ranges_bottom,1,axis=0)
+    #     self.laser_ranges_bottom = final_laser_range
+
+    # def get_laser_360(self,msg):
+    #     laser_ranges = msg.ranges
+    #     final_laser_range = []
+    #     final_laser_range = np.array(laser_ranges)
+    #     final_laser_range[np.isinf(final_laser_range)] = 5.0
+    #     final_laser_range = final_laser_range/5.0
+    #     # self.laser_ranges_360 = np.roll(self.laser_ranges_360,1,axis=0)
+    #     self.laser_ranges_360 = final_laser_range
 
     
     def node_spin(self):
@@ -186,20 +215,20 @@ class DroneGazeboEnv(gym.Env):
             self.done = True
             self.goal_reached = True
 
-        if ( self.pitch > 1.57 or self.pitch < -1.57):
-            for i in range(100):
-                self.reset_msg.state.pose.position.x = self.pose.position.x
-                self.reset_msg.state.pose.position.y = self.pose.position.y
-                self.reset_proxy.wait_for_service(timeout_sec=0.2)
-                future = self.reset_proxy.call_async(self.reset_msg)
-                time.sleep(0.1)
-        elif(self.roll > 1.57 or self.roll < -1.57):
-            for i in range(100):
-                self.reset_msg.state.pose.position.x = self.pose.position.x
-                self.reset_msg.state.pose.position.y = self.pose.position.y
-                self.reset_proxy.wait_for_service(timeout_sec=0.2)
-                future = self.reset_proxy.call_async(self.reset_msg)
-                time.sleep(0.1)
+        # if ( self.pitch > 1.57 or self.pitch < -1.57):
+        #     for i in range(100):
+        #         self.reset_msg.state.pose.position.x = self.pose.position.x
+        #         self.reset_msg.state.pose.position.y = self.pose.position.y
+        #         self.reset_proxy.wait_for_service(timeout_sec=0.2)
+        #         future = self.reset_proxy.call_async(self.reset_msg)
+        #         time.sleep(0.1)
+        # elif(self.roll > 1.57 or self.roll < -1.57):
+        #     for i in range(100):
+        #         self.reset_msg.state.pose.position.x = self.pose.position.x
+        #         self.reset_msg.state.pose.position.y = self.pose.position.y
+        #         self.reset_proxy.wait_for_service(timeout_sec=0.2)
+        #         future = self.reset_proxy.call_async(self.reset_msg)
+        #         time.sleep(0.1)
 
         
     def calculate_observation(self,data):
@@ -228,18 +257,20 @@ class DroneGazeboEnv(gym.Env):
         self.overshoot = False
         
 
-        time.sleep(2.0)
+        time.sleep(3.0)
 
         drone_pos = Pose()
         drone_pos.position.x = 0.0
         drone_pos.position.y = 0.0
         self.tree_locations[0] = drone_pos
         self.randomize_trees()
-        
+        time.sleep(1.0)
+
         # laser_combination_level = np.append(self.laser_ranges,self.laser_ranges_360)
-        laser_combination_level = self.laser_ranges
+        # laser_combination_level = self.laser_ranges
+        laser_combination_level =  self.extracted_row
         # laser_combination =  np.append(self.laser_ranges_top,self.laser_ranges, self.laser_ranges_bottom, self.laser_ranges_360)
-        self.closest_laser = np.min(laser_combination_level)
+        # self.closest_laser = np.min(laser_combination_level)
         # print(laser_combination)
         self.original_distance = math.sqrt(math.pow((self.goal[0] - self.pose.position.x),2) + math.pow((self.goal[1] - self.pose.position.y),2))
 
@@ -284,7 +315,7 @@ class DroneGazeboEnv(gym.Env):
 
         vel_cmd = Twist()
         # vel_cmd.linear.x = (action[0] + 1.01) * 0.05
-        vel_cmd.linear.x = float(((action[0])+ 1.0)*0.2)
+        vel_cmd.linear.x = float(((action[0])+ 1.0)*0.35)
         vel_cmd.linear.y = 0.0
         vel_cmd.linear.z = 0.0
         vel_cmd.angular.z = float((action[1]))*0.25
@@ -310,9 +341,10 @@ class DroneGazeboEnv(gym.Env):
             print("/gazebo/pause_physics service call failed")
         
         # laser_combination_level = np.append(self.laser_ranges,self.laser_ranges_360)
-        laser_combination_level = self.laser_ranges
+        # laser_combination_level = self.laser_ranges
+        laser_combination_level =  self.extracted_row
         # laser_combination =  np.append(self.laser_ranges_top,self.laser_ranges, self.laser_ranges_bottom, self.laser_ranges_360)
-        self.closest_laser = np.min(laser_combination_level)
+        # self.closest_laser = np.min(laser_combination_level)
         # print(laser_combination)
         # self.goal_data = np.roll(self.goal_data,1,axis=0)
         self.goal_data = np.array([action[0],action[1], self.distance, self.goal_heading - self.trueYaw])
@@ -320,13 +352,14 @@ class DroneGazeboEnv(gym.Env):
         state =  np.append(laser_combination_level,self.goal_data)
         # print(state)
 
-        if(self.ep_time > 200):
+        if(self.ep_time > 300):
             self.done = True
             truncated = True
         self.ep_time+=1
 
         if not self.done:
                 reward = (self.prev_distance - self.distance)
+                # reward = (-self.distance/100.0)
                 self.prev_distance = self.distance
         else:
             if(self.goal_reached):
@@ -382,8 +415,8 @@ class DroneGazeboEnv(gym.Env):
             tree_x = 0.0
             tree_y = 0.0
             while not tree_ok:
-                tree_x = random.uniform(-self.goal_range,self.goal_range)  
-                tree_y = random.uniform(-self.goal_range,self.goal_range)
+                tree_x = random.uniform(0.0,self.obstacle_range)  
+                tree_y = random.uniform(-self.obstacle_range,self.obstacle_range)
                 tree_ok = self.check_pos(tree_x,tree_y)
             
             tree = random.randint(0,1)
@@ -419,7 +452,7 @@ class DroneGazeboEnv(gym.Env):
             
         goal_ok = False
         while not goal_ok:
-            self.goal = [random.uniform(-self.goal_range,self.goal_range),random.uniform(-self.goal_range,self.goal_range)]  #default is -3.0 to 3.0
+            self.goal = [random.uniform(0.0,self.goal_range),random.uniform(-self.goal_range,self.goal_range)]  #default is -3.0 to 3.0
             goal_ok = self.check_pos_goal(self.goal[0],self.goal[1])
 
 
