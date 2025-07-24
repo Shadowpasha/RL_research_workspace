@@ -24,7 +24,7 @@ setup(
     license='TODO: License declaration',
     entry_points={
         'console_scripts': [
-            'octomap_publisher = f4_project.octo_to_map:main',
+            'reset_odom = f4_project.reset_odom_mobile:main',   
         ],
     },
 )

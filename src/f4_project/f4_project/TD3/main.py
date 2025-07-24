@@ -131,7 +131,7 @@ if __name__ == "__main__":
 	total_timesteps = 0 + args.load_steps
 	expl_min = 0.1
 	expl_noise = args.expl_noise
-	expl_decay_steps = 70000
+	expl_decay_steps = 40000
 
 
 	for t in range(500000):

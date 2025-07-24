@@ -25,12 +25,13 @@ from visualization_msgs.msg import MarkerArray
 from sensor_msgs.msg import LaserScan
 
 GOAL_REACHED_DIST = 0.15
-COLLISION_DIST = 0.15
-TIME_DELTA = 0.2
+COLLISION_DIST = 0.2
+TIME_DELTA = 0.05
 
 last_odom = None
 environment_dim = 20
 velodyne_data = np.ones(environment_dim) * 10
+laser_data = np.ones(environment_dim) * 10
 
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim):
@@ -74,8 +75,10 @@ class GazeboEnv(Node):
         self.odom_x = 0
         self.odom_y = 0
 
-        self.goal_x = 2.0
+        self.goal_x = 2.5
         self.goal_y = 0.0
+        self.colilision_counter = 0
+
 
         # Set up the ROS publishers and subscribers
         self.vel_pub = self.create_publisher(Twist, "/cmd_vel", 1)
@@ -83,6 +86,22 @@ class GazeboEnv(Node):
         self.publisher = self.create_publisher(MarkerArray, "goal_point", 3)
         self.publisher2 = self.create_publisher(MarkerArray, "linear_velocity", 1)
         self.publisher3 = self.create_publisher(MarkerArray, "angular_velocity", 1)
+
+
+    def stop_robot(self):
+        """
+        Publishes a zero-velocity command to stop the robot.
+        This is called during node shutdown.
+        """
+        self.get_logger().info("Sending zero velocity command to stop the robot...")
+        vel_cmd = Twist()
+        vel_cmd.linear.x = 0.0
+        vel_cmd.angular.z = 0.0
+        self.vel_pub.publish(vel_cmd)
+        # Give a small moment for the message to be sent
+        time.sleep(0.1) 
+        self.get_logger().info("Robot stop command sent.")
+
 
     # Perform an action and read a new state
     def step(self, action):
@@ -272,13 +291,16 @@ class GazeboEnv(Node):
         markerArray3.markers.append(marker3)
         self.publisher3.publish(markerArray3)
 
-    @staticmethod
-    def observe_collision(laser_data):
+    def observe_collision(self, laser_data):
         # Detect a collision from laser data
         min_laser = min(laser_data)
         if min_laser < COLLISION_DIST:
-            env.get_logger().info("Collision is detected!")
-            return True, True, min_laser
+             self.colilision_counter +=1
+             if(self.colilision_counter > 5):
+                env.get_logger().info("Collision is detected!")
+                return True, True, min_laser
+        else:
+            self.colilision_counter = 0
         return False, False, min_laser
 
     @staticmethod
@@ -320,31 +342,86 @@ class Velodyne_subscriber(Node):
         )
         self.subscription = self.create_subscription(
             LaserScan,
-            "/scan",
+            "/realsense_scan",
             self.velodyne_callback,
             qos_profile_laser)
         self.subscription
 
+        self.subscription_2 = self.create_subscription(
+            LaserScan,
+            "/scan",
+            self.laser_callback,
+            qos_profile_laser)
+        self.subscription_2
+
      
 
     def velodyne_callback(self, v):
-        global velodyne_data
+        global velodyne_data, laser_data
+        ranges = []
+        # print(int((len(v.ranges))))
+        append_index = 0
+        for i in range(0,len(v.ranges)):  # 62 -62  
+            if i % (int((((len(v.ranges) - 0)/20)))) == 0:
+                if(len(ranges)>=20):
+                    break
+                if (np.isnan(v.ranges[i])):
+                    ranges.append(laser_data[append_index])
+                elif (v.ranges[i] == 0.0):
+                    ranges.append(laser_data[append_index])
+                else:
+                    ranges.append(min(v.ranges[i],10))
+                    # ranges.append(10)
+                append_index +=1
+        # print(ranges)
+        velodyne_data[:] = ranges[:]
+
+    def laser_callback(self, v):
+        global laser_data
         ranges = []
         # print(int((len(v.ranges))))
         for i in range(125,len(v.ranges)):  # 62 -62  
             if i % (int((((len(v.ranges) - 125)/20)))) == 0:
                 if(len(ranges)>=20):
                     break
-                if v.ranges[i] == 0.0:
-                    ranges.append(10)
+                elif (v.ranges[i] == 0.0):
+                    ranges.append(5.0)
                 else:
-                    ranges.append(min(v.ranges[i],10))
-                    # ranges.append(10)
-        # v = LaserScan()
-        # print(ranges)
-        velodyne_data[:] = ranges[:]
+                    if(i > 10):
+                        v.ranges[i] += 0.3
+                    else:
+                        v.range[i] -= 0.3
 
-        
+                    if(v.intensities[i] > 1008):
+                        ranges.append(5.0)
+                    else:
+                        ranges.append(min(v.ranges[i],10))
+                    # ranges.append(10)
+        # print(ranges)
+        laser_data[:] = ranges[:]
+
+
+def get_recommended_turn(state):
+    min_distance = float('inf')  # Initialize with a very large number
+    index_of_nearest_obstacle = -1 # Initialize with an invalid index
+
+# Iterate through the LiDAR data to find the minimum distance and its index
+    for i in range(20):
+        distance = state[i]
+        if distance < min_distance:
+            min_distance = distance
+            index_of_nearest_obstacle = i
+    angle_per_step = 180 / (20) # Assuming uniform distribution
+                                                  # 20 steps for 21 values
+                                                  # (20 transitions between 21 points)
+    angle_of_nearest_obstacle = -90 + (index_of_nearest_obstacle * angle_per_step)
+
+    if angle_of_nearest_obstacle > 0:
+        return 0.1
+    else:
+        return -0.1
+    
+
 
 if __name__ == '__main__':
 
@@ -354,7 +431,8 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # cuda or cpu
     seed = 0  # Random seed number
     max_ep = 9999999999
-    file_name = "td3_velodyne_distance"  # name of the file to load the policy from
+    file_name = "td3_velodyne_distance_boxes_unlimited25-07-23-21-26"  # name of the file to load the policy from
+    # file_name = "td3_velodyne_distance_boxes25-07-21-21-40-15"
     environment_dim = 20
     robot_dim = 4
 
@@ -381,29 +459,41 @@ if __name__ == '__main__':
     executor = rclpy.executors.MultiThreadedExecutor()
     executor.add_node(odom_subscriber)
     executor.add_node(velodyne_subscriber)
+    executor.add_node(env)
+
 
     executor_thread = threading.Thread(target=executor.spin, daemon=True)
     executor_thread.start()
     
-    time.sleep(2)
+    time.sleep(4)
     rate = odom_subscriber.create_rate(4)
     state = env.reset()
-    # Begin the testing loop
-    while rclpy.ok():
-        # On termination of episode
-        if done:
-           env.step((0,0))
-           break
-        else:
-            #print(state)
-            action = network.get_action(np.array(state))
-            # Update action to fall in range [0,1] for linear velocity and [-1,1] for angular velocity
-            a_in = [((action[0]*1.0 + 1) / 2.0)*1.4, -action[1]*1.35]  #0.7 0.6  #1.0 0.7
-            next_state, reward, done, target = env.step(a_in)
-            # print(next_state)
-            done = 1 if episode_timesteps + 1 == max_ep else int(done)
+    env.get_logger().info("Navigating..")
+    try:
+        # Begin the testing loop
+        while rclpy.ok():
+            # On termination of episode
+            if done:
+                env.step((0,0))
+                break
+            else:
+                #print(state)
+                action = network.get_action(np.array(state))
+                # Update action to fall in range [0,1] for linear velocity and [-1,1] for angular velocity
+                # turn_assist = get_recommended_turn(state)
+                a_in = [((action[0]*1.0 + 1) / 2.0)*1.3, -(action[1])*2.1]  #0.7 0.6  #1.0 0.7
+                next_state, reward, done, target = env.step(a_in)
+                # # print(next_state)
+                done = 1 if episode_timesteps + 1 == max_ep else int(done)
 
-            state = next_state
-            episode_timesteps += 1
+                state = next_state
+                episode_timesteps += 1
 
-    rclpy.shutdown()
+        env.stop_robot()
+    except KeyboardInterrupt:
+            env.get_logger().info("KeyboardInterrupt received. Initiating shutdown.")
+            rclpy.shutdown()
+            # env.stop_robot()
+
+
+

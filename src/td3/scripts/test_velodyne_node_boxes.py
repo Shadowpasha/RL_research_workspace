@@ -517,7 +517,7 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # cuda or cpu
     seed = 0  # Random seed number
     max_ep = 500  # maximum number of steps per episode
-    file_name = "td3_velodyne_distance_boxes25-07-19-11-12-52"  # name of the file to load the policy from
+    file_name = "td3_velodyne_distance_boxes25-07-21-21-40-15"  # name of the file to load the policy from
     environment_dim = 20
     robot_dim = 4
 

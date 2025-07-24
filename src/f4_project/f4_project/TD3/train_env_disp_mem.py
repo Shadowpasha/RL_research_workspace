@@ -39,9 +39,9 @@ class DroneGazeboEnv(gym.Env):
        
         rclpy.init()
         self.node = rclpy.create_node("training")
-        self.goal_range = 5
-        self.obstacle_range = 3.5
-        self.num_obstacles = 3
+        self.goal_range = 3
+        self.obstacle_range = 4.5
+        self.num_obstacles = 5
         
         self.vel_pub = self.node.create_publisher(Twist,'/simple_drone/cmd_vel', 10)
         self.take_pub = self.node.create_publisher(Empty_msg,'/simple_drone/takeoff', 10)
@@ -113,7 +113,7 @@ class DroneGazeboEnv(gym.Env):
         self.laser_ranges_bottom = np.zeros(10)
         self.laser_ranges_360 = np.zeros(20)
         self.goal_data = np.zeros(4)
-        self.extracted_row = []
+        self.extracted_row = np.zeros(24)
 
     def get_laser(self,msg):
         # print("Got Image")
@@ -122,18 +122,20 @@ class DroneGazeboEnv(gym.Env):
         normalized_depth_image_display = cv2.normalize(depth_array, None, -1.0, 1.0, cv2.NORM_MINMAX, dtype=cv2.CV_32F)
         resized_image_hwc = cv2.resize(normalized_depth_image_display, (24,24), interpolation=cv2.INTER_LINEAR)
         self.extracted_row = resized_image_hwc[12, :]
+
+
+        for i in range (24):
+            column_sum = 0
+            for j in range(24):
+                middle_row_offset = abs(j - 12)
+                modulation_perc = (12.0 - float(middle_row_offset))/12.0
+                exp_ = math.pow((1.5),10*modulation_perc)
+                column_sum += exp_ * resized_image_hwc[j, i]
+            self.extracted_row[i] = column_sum
+
         for i in range(24):
             if np.isnan(self.extracted_row[i]):
                 self.extracted_row[i] = 1.0
-
-        # for i in range (12):
-        #     column_sum = 0
-        #     for j in range(12):
-        #         middle_row_offset = abs(j - 6)
-        #         modulation_perc = (6.0 - float(middle_row_offset))/6.0
-        #         exp_ = math.exp((1.0/2.0),10*modulation_perc)
-        #         column_sum += exp_ * resized_image_hwc[j, i]
-        #     self.extracted_row[i] = column_sum
 
         # cv2.imshow("array",np.array(self.extracted_row))
         # cv2.waitKey(1)
@@ -318,7 +320,7 @@ class DroneGazeboEnv(gym.Env):
         vel_cmd.linear.x = float(((action[0])+ 1.0)*0.35)
         vel_cmd.linear.y = 0.0
         vel_cmd.linear.z = 0.0
-        vel_cmd.angular.z = float((action[1]))*0.25
+        vel_cmd.angular.z = float((action[1]))*0.35
         self.vel_pub.publish(vel_cmd)
 
         while not self.unpause_proxy.wait_for_service(timeout_sec=1.0):

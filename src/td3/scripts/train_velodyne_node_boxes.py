@@ -35,7 +35,7 @@ from geometry_msgs.msg import Pose, PoseStamped, TwistStamped, Point
 from tf_transformations import quaternion_from_euler, euler_from_quaternion
 import geometry_msgs.msg
 
-GOAL_REACHED_DIST = 0.3
+GOAL_REACHED_DIST = 0.15
 COLLISION_DIST = 0.32
 TIME_DELTA = 0.1
 
@@ -138,7 +138,7 @@ class td3(object):
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
 
         self.max_action = max_action
-        self.writer = SummaryWriter(log_dir="/home/anas/ros2_ws/src/td3/scripts/runs/distance_boxes" + datetime.now().strftime("%y-%m-%d-%H-%M-%S"))
+        self.writer = SummaryWriter(log_dir="/home/anas/ros2_ws/src/td3/scripts/runs/distance_boxes" + datetime.now().strftime("%y-%m-%d-%H-%M"))
         # os.path.dirname(os.path.realpath(__file__)) + "/runs"
         self.iter_count = 0
 
@@ -478,8 +478,8 @@ class GazeboEnv(Node):
         goal_ok = False
 
         while not goal_ok:
-            self.goal_x = self.odom_x + random.uniform(0.0, 4.5)
-            self.goal_y = self.odom_y + random.uniform(-1.5, 1.5)
+            self.goal_x = self.odom_x + random.uniform(1.5, 5.0)
+            self.goal_y = self.odom_y + random.uniform(-0.8, 0.8)
             goal_ok = self.check_pos_goal(self.goal_x, self.goal_y)
 
     def check_pos(self,x,y):
@@ -489,7 +489,7 @@ class GazeboEnv(Node):
             if( model.position.x + 0.5 > x > model.position.x - 0.5 and model.position.y + 0.5 > y > model.position.y - 0.5):
                 pos_ok = False
 
-        if( 0.0 + 1.2 > x > 0.0 - 1.2 and 0.0 + 1.2 > y > 0.0 - 1.2):
+        if( 0.0 + 0.6 > x > 0.0 - 0.6 and 0.0 + 0.6 > y > 0.0 - 0.6):
             pos_ok = False
 
         return pos_ok
@@ -519,13 +519,13 @@ class GazeboEnv(Node):
     def randomize_boxes(self):
         
         print("randomizing")
-        for i in range(1,5):  # 6 to 12
+        for i in range(1,3):  # 6 to 12
             box_ok = False
             box_x = 0.0
             box_y = 0.0
             while not box_ok:
                 box_x = random.uniform(0.0,3.5)  
-                box_y = random.uniform(-2.0,2.0)
+                box_y = random.uniform(-0.8,0.8)
                 box_ok = self.check_pos(box_x,box_y)
             
             tree = random.randint(0,1)
@@ -642,7 +642,7 @@ class GazeboEnv(Node):
         else:
             # r3 = lambda x: 1 - x if x < 1 else 0.0
         
-            costs = (self.prev_distance - distance) * 10
+            costs = (self.prev_distance - distance) * 10  - (0.2/min_laser)
             self.prev_distance = distance
             # env.get_logger().info(str(costs))
             return costs 
@@ -707,7 +707,7 @@ if __name__ == '__main__':
     max_ep = 200  # maximum number of steps per episode
     eval_ep = 10  # number of episodes for evaluation
     max_timesteps = 5e6  # Maximum number of steps to perform
-    expl_noise = 0.5  # Initial exploration noise starting value in range [expl_min ... 1]
+    expl_noise = 0.2  # Initial exploration noise starting value in range [expl_min ... 1]
     expl_decay_steps = (
         300000  # Number of steps over which the initial exploration noise will decay over
     )
@@ -719,8 +719,8 @@ if __name__ == '__main__':
     noise_clip = 0.5  # Maximum clamping values of the noise
     policy_freq = 2  # Frequency of Actor network updates
     buffer_size = 1e6  # Maximum size of the buffer
-    file_name = "td3_velodyne_distance_boxes" + datetime.now().strftime("%y-%m-%d-%H-%M-%S")  # name of the file to store the policy
-    load_name = "td3_velodyne_distance_boxes25-07-18-21-50-17"  # name of the file to store the policy
+    file_name = "td3_velodyne_distance_boxes_unlimited" + datetime.now().strftime("%y-%m-%d-%H-%M")  # name of the file to store the policy
+    load_name = "td3_velodyne_distance_boxes_unlimited25-07-23-21-26"  # name of the file to store the policy
     save_model = True  # Weather to save the model or not
     load_model = True  # Weather to load a stored model
     random_near_obstacle = False  # To take random actions near obstacles or not
@@ -775,7 +775,7 @@ if __name__ == '__main__':
     executor_thread = threading.Thread(target=executor.spin, daemon=True)
     executor_thread.start()
 
-    writer = SummaryWriter(log_dir="/home/anas/ros2_ws/src/td3/scripts/runs/distance_boxes" + datetime.now().strftime("%y-%m-%d-%H-%M-%S"))
+    writer = SummaryWriter(log_dir="/home/anas/ros2_ws/src/td3/scripts/runs/distance_boxes" + datetime.now().strftime("%y-%m-%d-%H-%M"))
     writer_reward = 0
     episode_reward = 0
     average_reward = np.ones(10)
