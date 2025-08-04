@@ -15,23 +15,26 @@ import random
 from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
 import point_cloud2 as pc2
 from gazebo_msgs.msg import ModelState
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, PoseStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
 from squaternion import Quaternion
 from std_srvs.srv import Empty
+from std_msgs.msg import Empty as EmptyMsg
 from visualization_msgs.msg import Marker
 from visualization_msgs.msg import MarkerArray
 from sensor_msgs.msg import LaserScan
 
 GOAL_REACHED_DIST = 0.15
 COLLISION_DIST = 0.2
+FAIL_SAFE_DIST = 0.5  # Activate fail-safe if obstacle is closer than this
+FAIL_SAFE_RELEASE_DIST = 0.6 # Release fail-safe if obstacle is further than this (hysteresis)
 TIME_DELTA = 0.05
 
 last_odom = None
 environment_dim = 20
 velodyne_data = np.ones(environment_dim) * 10
-laser_data = np.ones(environment_dim) * 10
+laser_data = np.ones(environment_dim) * 10 # This variable seems unused, consider removing or using
 
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim):
@@ -75,10 +78,11 @@ class GazeboEnv(Node):
         self.odom_x = 0
         self.odom_y = 0
 
-        self.goal_x = 3.0
-        self.goal_y = 1.9
+        self.goal_x = 0.0
+        self.goal_y = 0.0
         self.colilision_counter = 0
-
+        self.current_goal_active = False
+        self.fail_safe_active = False # New flag for fail-safe state
 
         # Set up the ROS publishers and subscribers
         self.vel_pub = self.create_publisher(Twist, "/cmd_vel", 1)
@@ -87,40 +91,66 @@ class GazeboEnv(Node):
         self.publisher2 = self.create_publisher(MarkerArray, "linear_velocity", 1)
         self.publisher3 = self.create_publisher(MarkerArray, "angular_velocity", 1)
 
+        qos_profile_commands = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1, # No need for a deep history for simple commands like this
+            durability=DurabilityPolicy.TRANSIENT_LOCAL # Keep this volatile to match if you prefer. Or make both transient local.
+                                                 # For a simple empty message, VOLATILE is often sufficient IF both are running.
+        )
+
+        # New subscribers for goal and cancellation
+        self.goal_subscriber = self.create_subscription(
+            PoseStamped,
+            "/goal_pose",
+            self.goal_callback,
+            10
+        )
+        self.cancel_subscriber = self.create_subscription(
+            EmptyMsg,
+            "/cancel_navigation",
+            self.cancel_callback,
+            qos_profile_commands
+        )
+
+        # New publisher for navigation status
+        self.done_navigating_pub = self.create_publisher(EmptyMsg, "/done_navigating", 1)
+
+    def goal_callback(self, msg):
+        self.goal_x = msg.pose.position.x
+        self.goal_y = msg.pose.position.y
+        self.current_goal_active = True
+        self.fail_safe_active = False # Reset fail-safe on new goal
+        self.get_logger().info(f"New goal received: ({self.goal_x}, {self.goal_y}). Navigation started.")
+        self.colilision_counter = 0
+
+    def cancel_callback(self, msg):
+        if self.current_goal_active:
+            self.current_goal_active = False
+            self.fail_safe_active = False # Reset fail-safe on cancellation
+            self.stop_robot()
+            self.get_logger().info("Navigation goal cancelled.")
+            self.done_navigating_pub.publish(EmptyMsg())
 
     def stop_robot(self):
         """
         Publishes a zero-velocity command to stop the robot.
-        This is called during node shutdown.
+        This is called during node shutdown or goal cancellation/completion.
         """
-        self.get_logger().info("Sending zero velocity command to stop the robot...")
         vel_cmd = Twist()
         vel_cmd.linear.x = 0.0
         vel_cmd.angular.z = 0.0
         self.vel_pub.publish(vel_cmd)
-        # Give a small moment for the message to be sent
-        time.sleep(0.1) 
-        self.get_logger().info("Robot stop command sent.")
+        time.sleep(0.1)
+        self.fail_safe_active = False # Ensure fail-safe is off when stopped
 
-
-    # Perform an action and read a new state
-    def step(self, action):
+    def step(self, action_rl): # Renamed action to action_rl to distinguish from fail-safe action
         global velodyne_data
         target = False
-        
-        # Publish the robot action
-        vel_cmd = Twist()
-        vel_cmd.linear.x = float(action[0])
-        vel_cmd.angular.z = float(action[1])
-        self.vel_pub.publish(vel_cmd)
-        self.publish_markers(action)
-        
-        # propagate state for TIME_DELTA seconds
-        time.sleep(TIME_DELTA)
+        done = False # Initialize done here
 
         # read velodyne laser state
-        # print(velodyne_data)
-        done, collision, min_laser = self.observe_collision(velodyne_data)
+        done_collision, collision, min_laser = self.observe_collision(velodyne_data)
         v_state = []
         v_state[:] = velodyne_data[:]
         laser_state = [v_state]
@@ -162,21 +192,79 @@ class GazeboEnv(Node):
             theta = -np.pi - theta
             theta = np.pi - theta
 
+        # Fail-safe logic
+        action_to_publish = action_rl # Default to RL action
+        if min_laser < FAIL_SAFE_DIST and not self.fail_safe_active:
+            self.get_logger().warn(f"Fail-safe activated! Obstacle at {min_laser:.2f}m.")
+            self.fail_safe_active = True
+        elif self.fail_safe_active and min_laser > FAIL_SAFE_RELEASE_DIST:
+            self.get_logger().info(f"Fail-safe released. Obstacle at {min_laser:.2f}m.")
+            self.fail_safe_active = False
+
+        if self.fail_safe_active:
+            # Simple fail-safe: turn away from the obstacle or back up
+            vel_cmd = Twist()
+            # Determine which side the obstacle is closer and turn away
+            # We assume velodyne_data is sorted angularly.
+            # Find the index of the minimum laser reading to infer direction.
+            min_laser_idx = np.argmin(velodyne_data)
+            
+            # Divide the 20 segments into left and right (arbitrary threshold)
+            # This is a very basic heuristic. A better approach would map angles.
+            if min_laser_idx < environment_dim / 2: # Obstacle likely on the right side of robot
+                vel_cmd.angular.z = -0.5 # Turn left
+                vel_cmd.linear.x = 0.2 # Stop linear movement
+            else: # Obstacle likely on the left side of robot
+                vel_cmd.angular.z = 0.5 # Turn right
+                vel_cmd.linear.x = 0.2 # Stop linear movement
+
+            # If obstacle is directly in front, consider backing up
+            if min_laser < (COLLISION_DIST + 0.1) and (min_laser_idx in [8, 9, 10, 11]): # Example indices for front
+                 vel_cmd.linear.x = -0.1 # Move backward slowly
+                 vel_cmd.angular.z = 0.0 # Prioritize backward movement
+            
+            action_to_publish = [vel_cmd.linear.x, vel_cmd.angular.z]
+            self.get_logger().info(f"Fail-safe action: Linear={action_to_publish[0]:.2f}, Angular={action_to_publish[1]:.2f}")
+
+        # Publish the robot action (either RL or fail-safe)
+        vel_cmd = Twist()
+        vel_cmd.linear.x = float(action_to_publish[0])
+        vel_cmd.angular.z = float(action_to_publish[1])
+        self.vel_pub.publish(vel_cmd)
+        self.publish_markers(action_to_publish) # Use the action that was actually published
+
+        # propagate state for TIME_DELTA seconds
+        time.sleep(TIME_DELTA)
+
         # Detect if the goal has been reached and give a large positive reward
         if distance < GOAL_REACHED_DIST:
             env.get_logger().info("GOAL is reached!")
             target = True
             done = True
+            self.current_goal_active = False
+            self.stop_robot()
+            self.done_navigating_pub.publish(EmptyMsg())
 
-        robot_state = [distance, theta, action[0], action[1]]
+        if collision: # This 'collision' comes from observe_collision
+            self.current_goal_active = False
+            done = True # Mark done if collision
+            self.stop_robot()
+            self.done_navigating_pub.publish(EmptyMsg())
+
+        robot_state = [distance, theta, action_to_publish[0], action_to_publish[1]] # Use published action
         state = np.append(laser_state, robot_state)
-        reward = self.get_reward(target, collision, action, min_laser)
+        reward = self.get_reward(target, collision, action_to_publish, min_laser) # Use published action for reward
 
         return state, reward, done, target
 
     def reset(self):
-
         # Resets the state of the environment and returns an initial observation.
+        # This reset is intended for the start of a new navigation attempt.
+        if not self.current_goal_active:
+            # If no goal is active, we don't need to reset the robot state for navigation.
+            # We can return a default state or wait for a goal.
+            return np.zeros(self.environment_dim + 4) # Return a zero state
+
         quaternion = Quaternion(
             last_odom.pose.pose.orientation.w,
             last_odom.pose.pose.orientation.x,
@@ -226,7 +314,6 @@ class GazeboEnv(Node):
         robot_state = [distance, theta, 0.0, 0.0]
         state = np.append(laser_state, robot_state)
         return state
-
 
     def publish_markers(self, action):
         # Publish visual data in Rviz
@@ -295,13 +382,13 @@ class GazeboEnv(Node):
         # Detect a collision from laser data
         min_laser = min(laser_data)
         if min_laser < COLLISION_DIST:
-             self.colilision_counter +=1
-             if(self.colilision_counter > 5):
+            self.colilision_counter +=1
+            if(self.colilision_counter > 5): # Require 5 consecutive readings below COLLISION_DIST to confirm collision
                 env.get_logger().info("Collision is detected!")
-                return True, True, min_laser
+                return True, True, min_laser # done, collision, min_laser
         else:
-            self.colilision_counter = 0
-        return False, False, min_laser
+            self.colilision_counter = 0 # Reset counter if not in collision
+        return False, False, min_laser # done, collision, min_laser
 
     @staticmethod
     def get_reward(target, collision, action, min_laser):
@@ -321,7 +408,7 @@ class Odom_subscriber(Node):
         super().__init__('odom_subscriber')
         self.subscription = self.create_subscription(
             Odometry,
-            '/odometry/filtered',
+            '/odom',
             self.odom_callback,
             10)
         self.subscription
@@ -334,105 +421,49 @@ class Velodyne_subscriber(Node):
 
     def __init__(self):
         super().__init__('velodyne_subscriber')
-        qos_profile_laser = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.SYSTEM_DEFAULT,
-            history=DurabilityPolicy.SYSTEM_DEFAULT,
-            depth=10
-        )
         self.subscription = self.create_subscription(
-            LaserScan,
-            "/realsense_scan",
+            PointCloud2,
+            "/velodyne_points",
             self.velodyne_callback,
-            qos_profile_laser)
+            10)
         self.subscription
 
-        self.subscription_2 = self.create_subscription(
-            LaserScan,
-            "/scan",
-            self.laser_callback,
-            qos_profile_laser)
-        self.subscription_2
-
-     
+        self.gaps = [[-np.pi / 2 - 0.03, -np.pi / 2 + np.pi / environment_dim]]
+        for m in range(environment_dim - 1):
+            self.gaps.append(
+                [self.gaps[m][1], self.gaps[m][1] + np.pi / environment_dim]
+            )
+        self.gaps[-1][-1] += 0.03
 
     def velodyne_callback(self, v):
-        global velodyne_data, laser_data
-        ranges = []
-        # print(int((len(v.ranges))))
-        append_index = 0
-        for i in range(0,len(v.ranges)):  # 62 -62  
-            if i % (int((((len(v.ranges) - 0)/20)))) == 0:
-                if(len(ranges)>=20):
-                    break
-                if (np.isnan(v.ranges[i])):
-                    ranges.append(laser_data[append_index])
-                elif (v.ranges[i] == 0.0):
-                    ranges.append(laser_data[append_index])
-                else:
-                    ranges.append(min(v.ranges[i],10))
-                    # ranges.append(10)
-                append_index +=1
-        # print(ranges)
-        velodyne_data[:] = ranges[:]
+        global velodyne_data
+        data = list(pc2.read_points(v, skip_nans=False, field_names=("x", "y", "z")))
+        velodyne_data = np.ones(environment_dim) * 10
+        for i in range(len(data)):
+            if data[i][2] > -0.2: # Filter out ground points
+                # Calculate angle of the point relative to robot's forward direction
+                dot = data[i][0] * 1 + data[i][1] * 0
+                mag1 = math.sqrt(math.pow(data[i][0], 2) + math.pow(data[i][1], 2))
+                mag2 = math.sqrt(math.pow(1, 2) + math.pow(0, 2))
+                if mag1 == 0: # Avoid division by zero
+                    continue
+                beta = math.acos(dot / (mag1 * mag2)) * np.sign(data[i][1])
+                dist = math.sqrt(data[i][0] ** 2 + data[i][1] ** 2 + data[i][2] ** 2)
 
-    def laser_callback(self, v):
-        global laser_data
-        ranges = []
-        # print(int((len(v.ranges))))
-        for i in range(125,len(v.ranges)):  # 62 -62  
-            if i % (int((((len(v.ranges) - 125)/20)))) == 0:
-                if(len(ranges)>=20):
-                    break
-                elif (v.ranges[i] == 0.0):
-                    ranges.append(5.0)
-                else:
-                    if(i > 10):
-                        v.ranges[i] += 0.3
-                    else:
-                        v.range[i] -= 0.3
-
-                    if(v.intensities[i] > 1008):
-                        ranges.append(5.0)
-                    else:
-                        ranges.append(min(v.ranges[i],10))
-                    # ranges.append(10)
-        # print(ranges)
-        laser_data[:] = ranges[:]
-
-
-def get_recommended_turn(state):
-    min_distance = float('inf')  # Initialize with a very large number
-    index_of_nearest_obstacle = -1 # Initialize with an invalid index
-
-# Iterate through the LiDAR data to find the minimum distance and its index
-    for i in range(20):
-        distance = state[i]
-        if distance < min_distance:
-            min_distance = distance
-            index_of_nearest_obstacle = i
-    angle_per_step = 180 / (20) # Assuming uniform distribution
-                                                  # 20 steps for 21 values
-                                                  # (20 transitions between 21 points)
-    angle_of_nearest_obstacle = -90 + (index_of_nearest_obstacle * angle_per_step)
-
-    if angle_of_nearest_obstacle > 0:
-        return 0.1
-    else:
-        return -0.1
-    
-
+                for j in range(len(self.gaps)):
+                    if self.gaps[j][0] <= beta < self.gaps[j][1]:
+                        velodyne_data[j] = min(velodyne_data[j], dist)
+                        break
 
 if __name__ == '__main__':
 
     rclpy.init(args=None)
 
     # Set the parameters for the implementation
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # cuda or cpu
-    seed = 0  # Random seed number
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    seed = 0
     max_ep = 9999999999
-    file_name = "td3_velodyne_distance_boxes_unlimited25-07-23-21-26"  # name of the file to load the policy from
-    # file_name = "td3_velodyne_distance_boxes25-07-21-21-40-15"
+    file_name = "td3_velodyne_distance_boxes_unlimited25-07-23-21-26"
     environment_dim = 20
     robot_dim = 4
 
@@ -445,8 +476,8 @@ if __name__ == '__main__':
     network = td3(state_dim, action_dim)
     try:
         network.load(file_name, "/home/anas/ros2_ws/src/td3/scripts/pytorch_models")
-    except:
-        raise ValueError("Could not load the stored model parameters")
+    except Exception as e:
+        raise ValueError(f"Could not load the stored model parameters: {e}")
 
     done = False
     episode_timesteps = 0
@@ -461,39 +492,47 @@ if __name__ == '__main__':
     executor.add_node(velodyne_subscriber)
     executor.add_node(env)
 
-
     executor_thread = threading.Thread(target=executor.spin, daemon=True)
     executor_thread.start()
-    
+
     time.sleep(1.5)
     rate = odom_subscriber.create_rate(4)
-    state = env.reset()
-    env.get_logger().info("Navigating..")
+
+    env.get_logger().info("Waiting for a goal pose on /goal_pose...")
+
     try:
-        # Begin the testing loop
         while rclpy.ok():
-            # On termination of episode
-            if done:
-                env.step((0,0))
-                break
-            else:
-                #print(state)
-                action = network.get_action(np.array(state))
+            if env.current_goal_active:
+                if done:
+                    env.get_logger().info("Navigation finished for the current goal. Waiting for a new one.")
+                    done = False
+                    episode_timesteps = 0
+
+                state = env.reset()
+
+                if last_odom is None:
+                    env.get_logger().info("Waiting for odometry data...")
+                    time.sleep(0.5)
+                    continue
+
+                # Get action from RL model, but it might be overridden by fail-safe in env.step
+                action_rl = network.get_action(np.array(state))
                 # Update action to fall in range [0,1] for linear velocity and [-1,1] for angular velocity
-                # turn_assist = get_recommended_turn(state)
-                a_in = [((action[0]*1.0 + 1) / 2.0)*1.3, -(action[1])*1.9]  #0.7 0.6  #1.0 0.7
-                next_state, reward, done, target = env.step(a_in)
-                # # print(next_state)
-                done = 1 if episode_timesteps + 1 == max_ep else int(done)
+                a_in = [((action_rl[0]*1.0 + 1) / 2.0), (action_rl[1])]
+
+                next_state, reward, done, target = env.step(a_in) # Pass RL action
+
+                done = done or (episode_timesteps + 1 == max_ep)
 
                 state = next_state
                 episode_timesteps += 1
+            else:
+                env.stop_robot()
+                episode_timesteps = 0
+                done = False
+                # rclpy.spin_once(env, timeout_sec=0.5)
 
-        env.stop_robot()
     except KeyboardInterrupt:
-            env.get_logger().info("KeyboardInterrupt received. Initiating shutdown.")
-            rclpy.shutdown()
-            # env.stop_robot()
-
-
-
+        env.get_logger().info("KeyboardInterrupt received. Initiating shutdown.")
+        env.stop_robot()
+        rclpy.shutdown()

@@ -15,11 +15,12 @@ import random
 from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
 import point_cloud2 as pc2
 from gazebo_msgs.msg import ModelState
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, PoseStamped # Added PoseStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
 from squaternion import Quaternion
 from std_srvs.srv import Empty
+from std_msgs.msg import Empty as EmptyMsg # Alias to avoid conflict with Empty service
 from visualization_msgs.msg import Marker
 from visualization_msgs.msg import MarkerArray
 from sensor_msgs.msg import LaserScan
@@ -75,10 +76,10 @@ class GazeboEnv(Node):
         self.odom_x = 0
         self.odom_y = 0
 
-        self.goal_x = 3.0
-        self.goal_y = 1.9
+        self.goal_x = 0.0 # Initialized to 0.0, will be set by goal_pose
+        self.goal_y = 0.0 # Initialized to 0.0, will be set by goal_pose
         self.colilision_counter = 0
-
+        self.current_goal_active = False # Flag to indicate if a goal is active
 
         # Set up the ROS publishers and subscribers
         self.vel_pub = self.create_publisher(Twist, "/cmd_vel", 1)
@@ -87,39 +88,70 @@ class GazeboEnv(Node):
         self.publisher2 = self.create_publisher(MarkerArray, "linear_velocity", 1)
         self.publisher3 = self.create_publisher(MarkerArray, "angular_velocity", 1)
 
+        # New subscribers for goal and cancellation
+        self.goal_subscriber = self.create_subscription(
+            PoseStamped,
+            "/goal_pose",
+            self.goal_callback,
+            10
+        )
+        self.cancel_subscriber = self.create_subscription(
+            EmptyMsg,
+            "/cancel_navigation",
+            self.cancel_callback,
+            10
+        )
+
+        # New publisher for navigation status
+        self.done_navigating_pub = self.create_publisher(EmptyMsg, "/done_navigating", 1)
+
+    def goal_callback(self, msg):
+        self.goal_x = msg.pose.position.x
+        self.goal_y = msg.pose.position.y
+        self.current_goal_active = True
+        self.get_logger().info(f"New goal received: ({self.goal_x}, {self.goal_y}). Navigation started.")
+        # Reset collision counter and other state variables if necessary for a new goal
+        self.colilision_counter = 0
+
+    def cancel_callback(self, msg):
+        if self.current_goal_active:
+            self.current_goal_active = False
+            self.stop_robot()
+            self.get_logger().info("Navigation goal cancelled.")
+            self.done_navigating_pub.publish(EmptyMsg()) # Send empty message on cancellation
+
 
     def stop_robot(self):
         """
         Publishes a zero-velocity command to stop the robot.
-        This is called during node shutdown.
+        This is called during node shutdown or goal cancellation/completion.
         """
-        self.get_logger().info("Sending zero velocity command to stop the robot...")
+        # self.get_logger().info("Sending zero velocity command to stop the robot...")
         vel_cmd = Twist()
         vel_cmd.linear.x = 0.0
         vel_cmd.angular.z = 0.0
         self.vel_pub.publish(vel_cmd)
         # Give a small moment for the message to be sent
-        time.sleep(0.1) 
-        self.get_logger().info("Robot stop command sent.")
+        time.sleep(0.1)
+        # self.get_logger().info("Robot stop command sent.")
 
 
     # Perform an action and read a new state
     def step(self, action):
         global velodyne_data
         target = False
-        
+
         # Publish the robot action
         vel_cmd = Twist()
         vel_cmd.linear.x = float(action[0])
         vel_cmd.angular.z = float(action[1])
         self.vel_pub.publish(vel_cmd)
         self.publish_markers(action)
-        
+
         # propagate state for TIME_DELTA seconds
         time.sleep(TIME_DELTA)
 
         # read velodyne laser state
-        # print(velodyne_data)
         done, collision, min_laser = self.observe_collision(velodyne_data)
         v_state = []
         v_state[:] = velodyne_data[:]
@@ -167,6 +199,14 @@ class GazeboEnv(Node):
             env.get_logger().info("GOAL is reached!")
             target = True
             done = True
+            self.current_goal_active = False # Goal completed
+            self.stop_robot()
+            self.done_navigating_pub.publish(EmptyMsg()) # Send empty message on goal completion
+
+        if collision:
+            self.current_goal_active = False # Collision detected
+            self.stop_robot()
+            self.done_navigating_pub.publish(EmptyMsg()) # Send empty message on collision
 
         robot_state = [distance, theta, action[0], action[1]]
         state = np.append(laser_state, robot_state)
@@ -175,8 +215,13 @@ class GazeboEnv(Node):
         return state, reward, done, target
 
     def reset(self):
-
         # Resets the state of the environment and returns an initial observation.
+        # This reset is intended for the start of a new navigation attempt.
+        if not self.current_goal_active:
+            # If no goal is active, we don't need to reset the robot state for navigation.
+            # We can return a default state or wait for a goal.
+            return np.zeros(self.environment_dim + 4) # Return a zero state
+
         quaternion = Quaternion(
             last_odom.pose.pose.orientation.w,
             last_odom.pose.pose.orientation.x,
@@ -295,8 +340,8 @@ class GazeboEnv(Node):
         # Detect a collision from laser data
         min_laser = min(laser_data)
         if min_laser < COLLISION_DIST:
-             self.colilision_counter +=1
-             if(self.colilision_counter > 5):
+            self.colilision_counter +=1
+            if(self.colilision_counter > 5):
                 env.get_logger().info("Collision is detected!")
                 return True, True, min_laser
         else:
@@ -354,14 +399,12 @@ class Velodyne_subscriber(Node):
             qos_profile_laser)
         self.subscription_2
 
-     
 
     def velodyne_callback(self, v):
         global velodyne_data, laser_data
         ranges = []
-        # print(int((len(v.ranges))))
         append_index = 0
-        for i in range(0,len(v.ranges)):  # 62 -62  
+        for i in range(0,len(v.ranges)):
             if i % (int((((len(v.ranges) - 0)/20)))) == 0:
                 if(len(ranges)>=20):
                     break
@@ -371,16 +414,13 @@ class Velodyne_subscriber(Node):
                     ranges.append(laser_data[append_index])
                 else:
                     ranges.append(min(v.ranges[i],10))
-                    # ranges.append(10)
                 append_index +=1
-        # print(ranges)
         velodyne_data[:] = ranges[:]
 
     def laser_callback(self, v):
         global laser_data
         ranges = []
-        # print(int((len(v.ranges))))
-        for i in range(125,len(v.ranges)):  # 62 -62  
+        for i in range(125,len(v.ranges)):
             if i % (int((((len(v.ranges) - 125)/20)))) == 0:
                 if(len(ranges)>=20):
                     break
@@ -390,37 +430,17 @@ class Velodyne_subscriber(Node):
                     if(i > 10):
                         v.ranges[i] += 0.3
                     else:
-                        v.range[i] -= 0.3
+                        # This line was originally 'v.range[i] -= 0.3' which is a typo.
+                        # Assuming it was meant to be v.ranges[i]
+                        v.ranges[i] -= 0.3
 
                     if(v.intensities[i] > 1008):
                         ranges.append(5.0)
                     else:
                         ranges.append(min(v.ranges[i],10))
-                    # ranges.append(10)
-        # print(ranges)
         laser_data[:] = ranges[:]
 
 
-def get_recommended_turn(state):
-    min_distance = float('inf')  # Initialize with a very large number
-    index_of_nearest_obstacle = -1 # Initialize with an invalid index
-
-# Iterate through the LiDAR data to find the minimum distance and its index
-    for i in range(20):
-        distance = state[i]
-        if distance < min_distance:
-            min_distance = distance
-            index_of_nearest_obstacle = i
-    angle_per_step = 180 / (20) # Assuming uniform distribution
-                                                  # 20 steps for 21 values
-                                                  # (20 transitions between 21 points)
-    angle_of_nearest_obstacle = -90 + (index_of_nearest_obstacle * angle_per_step)
-
-    if angle_of_nearest_obstacle > 0:
-        return 0.1
-    else:
-        return -0.1
-    
 
 
 if __name__ == '__main__':
@@ -464,36 +484,57 @@ if __name__ == '__main__':
 
     executor_thread = threading.Thread(target=executor.spin, daemon=True)
     executor_thread.start()
-    
-    time.sleep(1.5)
-    rate = odom_subscriber.create_rate(4)
-    state = env.reset()
-    env.get_logger().info("Navigating..")
+
+    time.sleep(1.5) # Give some time for subscribers to establish connection
+    rate = odom_subscriber.create_rate(4) # Rate for the main loop
+
+    env.get_logger().info("Waiting for a goal pose on /goal_pose...")
+
     try:
-        # Begin the testing loop
+        # Begin the navigation loop
         while rclpy.ok():
-            # On termination of episode
-            if done:
-                env.step((0,0))
-                break
-            else:
-                #print(state)
+            if env.current_goal_active:
+                # If a goal is active, proceed with navigation
+                if done: # If previous goal was completed or collided
+                    env.get_logger().info("Navigation finished for the current goal. Waiting for a new one.")
+                    done = False # Reset done flag for next potential goal
+                    episode_timesteps = 0 # Reset episode timesteps
+                    # The robot is already stopped by env.step() when done is True
+
+                # Get initial state for the new navigation attempt if done was true
+                # Or continue with the next_state from previous step
+                state = env.reset() # This reset now implicitly checks current_goal_active
+
+                # If last_odom is still None, it means odom data hasn't been received yet.
+                # Wait until it's available before attempting to get action.
+                if last_odom is None:
+                    env.get_logger().info("Waiting for odometry data...")
+                    time.sleep(0.5)
+                    continue
+
                 action = network.get_action(np.array(state))
                 # Update action to fall in range [0,1] for linear velocity and [-1,1] for angular velocity
-                # turn_assist = get_recommended_turn(state)
-                a_in = [((action[0]*1.0 + 1) / 2.0)*1.3, -(action[1])*1.9]  #0.7 0.6  #1.0 0.7
+                a_in = [((action[0]*1.0 + 1) / 2.0)*1.3, -(action[1])*1.9]
                 next_state, reward, done, target = env.step(a_in)
-                # # print(next_state)
-                done = 1 if episode_timesteps + 1 == max_ep else int(done)
+
+                # The original code sets done based on max_ep, but since we are
+                # managing goals dynamically, done should primarily come from
+                # goal reached or collision detection in env.step().
+                # Keeping this check for completeness, but typically target/collision will set `done`.
+                done = done or (episode_timesteps + 1 == max_ep)
 
                 state = next_state
                 episode_timesteps += 1
+            else:
+                # If no goal is active, stop the robot and wait
+                env.stop_robot()
+                episode_timesteps = 0 # Reset episode timesteps if no active goal
+                done = False # Ensure done is false if no active goal
+                rclpy.spin_once(env, timeout_sec=0.5) # Process callbacks while waiting for a goal
+                # We don't want to spin too fast when idle, so a small timeout is fine.
 
-        env.stop_robot()
+
     except KeyboardInterrupt:
-            env.get_logger().info("KeyboardInterrupt received. Initiating shutdown.")
-            rclpy.shutdown()
-            # env.stop_robot()
-
-
-
+        env.get_logger().info("KeyboardInterrupt received. Initiating shutdown.")
+        env.stop_robot() # Ensure robot stops on manual termination
+        rclpy.shutdown()
