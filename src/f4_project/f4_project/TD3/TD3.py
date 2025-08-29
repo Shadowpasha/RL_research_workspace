@@ -33,14 +33,10 @@ dimension_mem = 5
 class Actor(nn.Module):
 	def __init__(self, state_dim, action_dim, max_action):
 		super(Actor, self).__init__()
-
-		# self.flatten = nn.Flatten()
-
 		self.l1 = nn.Linear((state_dim), 800)
 		self.l2 = nn.Linear(800, 600)
 		self.l3 = nn.Linear(600, action_dim)
 
-		# self.g3 = SelfAttention(600)
 
 		self.max_action = max_action
 		
@@ -49,13 +45,6 @@ class Actor(nn.Module):
 
 		a = F.relu(self.l1(state))
 		a = F.relu(self.l2(a))
-		# g = F.relu(self.g1(state_array))
-		# self.g2.flatten_parameters()
-		# g, h = self.g2(g, hidden)
-		# g = self.g3(g)
-		# g = self.g4(g)
-
-		# t = F.relu(torch.cat([a,g], 2))
 
 		a = torch.tanh(self.l3(a))
 

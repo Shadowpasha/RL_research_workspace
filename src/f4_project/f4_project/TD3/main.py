@@ -52,7 +52,7 @@ if __name__ == "__main__":
 	parser.add_argument("--policy_noise", default=0.2)              # Noise added to target policy during critic update
 	parser.add_argument("--noise_clip", default=0.5)                # Range to clip target policy noise
 	parser.add_argument("--policy_freq", default=2, type=int)       # Frequency of delayed policy updates
-	parser.add_argument("--run_name", default="single_row")       # Frequency of delayed policy updates
+	parser.add_argument("--run_name", default="weighted_row")       # Frequency of delayed policy updates
 	parser.add_argument("--load_model", default="")    # Model load file name, "" doesn't load, "default" uses file_name
 	parser.add_argument("--load_steps", default=0)
 	args = parser.parse_args()
@@ -146,8 +146,7 @@ if __name__ == "__main__":
 			if expl_noise > expl_min:
 				expl_noise = expl_noise - ((1 - expl_min) / expl_decay_steps)
 			a = policy.select_action(np.array(state))
-			action = (
-				a + np.random.normal(0, max_action * expl_noise, size=action_dim)).clip(-max_action, max_action)
+			action = (a + np.random.normal(0, max_action * expl_noise, size=action_dim)).clip(-max_action, max_action)
 
 		# Perform action
 		next_state, reward, done, truncated, info = env.step(action)

@@ -15,7 +15,6 @@ import math
 import time
 import random
 import threading
-from px4_msgs.msg import VehicleLocalPosition
 from gazebo_msgs.srv import SetEntityState,SpawnEntity,DeleteEntity,GetEntityState
 from gazebo_msgs.msg import ContactsState, EntityState
 from tf_transformations import quaternion_from_euler, euler_from_quaternion
@@ -39,7 +38,7 @@ class DroneGazeboEnv(gym.Env):
        
         rclpy.init()
         self.node = rclpy.create_node("training")
-        self.goal_range = 3.5
+        self.goal_range = 3.0
         self.num_obstacles = 5
         
         self.vel_pub = self.node.create_publisher(Twist,'/simple_drone/cmd_vel', 10)
@@ -88,8 +87,8 @@ class DroneGazeboEnv(gym.Env):
         self.action_space = spaces.Box(np.array([-1,-1]),np.array([1,1]),(2,),dtype= np.float64) 
         
         self.observation_space = spaces.Dict({
-                 'goal': spaces.Box(0.0, 10, shape=(4,), dtype= np.float64),
-                 'image': spaces.Box(low=0, high=255, shape=(1, 32, 32), dtype=np.uint8)
+                 'goal': spaces.Box(-10.0, 10.0, shape=(4,), dtype= np.float64),
+                 'image': spaces.Box(low=0.0, high=1.0, shape=(1, 32, 32), dtype=np.float32)
                      } )
 
         self.laser_done_cnt = 0
@@ -115,11 +114,16 @@ class DroneGazeboEnv(gym.Env):
     def get_image(self,msg):
         self.cv_bridge_instance = CvBridge()
         depth_array = self.cv_bridge_instance.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        normalized_depth_image_display = cv2.normalize(depth_array, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+        # Replace NaNs with a valid number (e.g., 0)
+        depth_array = np.nan_to_num(depth_array, nan=5.0)
+
+        normalized_depth_image_display = cv2.normalize(depth_array, None, 0.0, 1.0, cv2.NORM_MINMAX, dtype=cv2.CV_32F)
         resized_image_hwc = cv2.resize(normalized_depth_image_display, (32,32), interpolation=cv2.INTER_LINEAR)
         resized_image_cwh = resized_image_hwc[np.newaxis, :, :] # Add channel dimension
-        self.image = np.transpose(resized_image_cwh, (0, 2, 1)) #
-        # print(self.image.shape)
+        self.image = np.transpose(resized_image_cwh, (0, 2, 1))
+
+
     
     def node_spin(self):
         self.executor.spin()
@@ -153,20 +157,20 @@ class DroneGazeboEnv(gym.Env):
             self.done = True
             self.goal_reached = True
 
-        if ( self.pitch > 1.57 or self.pitch < -1.57):
-            for i in range(100):
-                self.reset_msg.state.pose.position.x = self.pose.position.x
-                self.reset_msg.state.pose.position.y = self.pose.position.y
-                self.reset_proxy.wait_for_service(timeout_sec=0.2)
-                future = self.reset_proxy.call_async(self.reset_msg)
-                time.sleep(0.1)
-        elif(self.roll > 1.57 or self.roll < -1.57):
-            for i in range(100):
-                self.reset_msg.state.pose.position.x = self.pose.position.x
-                self.reset_msg.state.pose.position.y = self.pose.position.y
-                self.reset_proxy.wait_for_service(timeout_sec=0.2)
-                future = self.reset_proxy.call_async(self.reset_msg)
-                time.sleep(0.1)
+        # if ( self.pitch > 1.57 or self.pitch < -1.57):
+        #     for i in range(100):
+        #         self.reset_msg.state.pose.position.x = self.pose.position.x
+        #         self.reset_msg.state.pose.position.y = self.pose.position.y
+        #         self.reset_proxy.wait_for_service(timeout_sec=0.2)
+        #         future = self.reset_proxy.call_async(self.reset_msg)
+        #         time.sleep(0.1)
+        # elif(self.roll > 1.57 or self.roll < -1.57):
+        #     for i in range(100):
+        #         self.reset_msg.state.pose.position.x = self.pose.position.x
+        #         self.reset_msg.state.pose.position.y = self.pose.position.y
+        #         self.reset_proxy.wait_for_service(timeout_sec=0.2)
+        #         future = self.reset_proxy.call_async(self.reset_msg)
+        #         time.sleep(0.1)
 
         
     def calculate_observation(self,data):
@@ -251,11 +255,12 @@ class DroneGazeboEnv(gym.Env):
 
         vel_cmd = Twist()
         # vel_cmd.linear.x = (action[0] + 1.01) * 0.05
-        vel_cmd.linear.x = float(((action[0])+ 1.0)*0.2)
+        vel_cmd.linear.x = float(((action[0])+ 1.0)*0.4)
         vel_cmd.linear.y = 0.0
         vel_cmd.linear.z = 0.0
-        vel_cmd.angular.z = float((action[1]))*0.25
+        vel_cmd.angular.z = float((action[1]))*0.5
         self.vel_pub.publish(vel_cmd)
+
 
         while not self.unpause_proxy.wait_for_service(timeout_sec=1.0):
             print('service not available, waiting again...')
@@ -284,13 +289,13 @@ class DroneGazeboEnv(gym.Env):
         state["image"] = self.image
         # print(state)
         self.ep_time+=1
-        if(self.ep_time > 150):
+        if(self.ep_time > 200):
             self.done = True
             truncated = True
         
 
         if not self.done:
-                reward = max((self.prev_distance - self.distance), 0.0)
+                reward = (self.prev_distance - self.distance) * 2.0
                 self.prev_distance = self.distance
         else:
             if(self.goal_reached):
@@ -346,15 +351,15 @@ class DroneGazeboEnv(gym.Env):
             tree_x = 0.0
             tree_y = 0.0
             while not tree_ok:
-                tree_x = random.uniform(-self.goal_range,self.goal_range)  
-                tree_y = random.uniform(-self.goal_range,self.goal_range)
+                tree_x = random.uniform(-4.5,4.5)  
+                tree_y = random.uniform(-4.5,4.5)
                 tree_ok = self.check_pos(tree_x,tree_y)
             
             tree = random.randint(0,1)
             if(tree == 0):
-                path = "/home/anas/ros2_ws/src/f4_project/urdf/Tree.urdf"
+                path = "/home/anas/RL_research_workspace/src/f4_project/urdf/Tree.urdf"
             else:
-                path = "/home/anas/ros2_ws/src/f4_project/urdf/Tree_wider.urdf"
+                path = "/home/anas/RL_research_workspace/src/f4_project/urdf/Tree_wider.urdf"
 
             quaternion = quaternion_from_euler(0.0, 0.0, random.randint(0,360))
             quat = Quaternion()
@@ -399,7 +404,7 @@ class DroneGazeboEnv(gym.Env):
         spawn_req.initial_pose = pose
         spawn_req.robot_namespace="/goal"
         spawn_req.reference_frame = 'world'
-        spawn_req.xml = open("/home/anas/ros2_ws/src/f4_project/urdf/goal.urdf",'r').read()
+        spawn_req.xml = open("/home/anas/RL_research_workspace/src/f4_project/urdf/goal.urdf",'r').read()
 
         self.spawn_model_client.wait_for_service(timeout_sec=2)
 

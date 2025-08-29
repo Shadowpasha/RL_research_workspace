@@ -43,13 +43,13 @@ if __name__ == "__main__":
 	parser.add_argument("--policy", default="TD3")                  # Policy name (TD3, DDPG or OurDDPG)
 	parser.add_argument("--env", default="GazeboIrisEnv-v0")          # OpenAI gym environment name
 	parser.add_argument("--seed", default=random.randint(0,9999), type=int)              # Sets Gym, PyTorch and Numpy seeds
-	parser.add_argument("--start_timesteps", default=0, type=int)# Time steps initial random policy is used
+	parser.add_argument("--start_timesteps", default=2000, type=int)# Time steps initial random policy is used
 	parser.add_argument("--eval_freq", default=526, type=int)       # How often (time steps) we evaluate
 	parser.add_argument("--expl_noise", default=1.0, type=float)    # Std of Gaussian exploration noise
 	parser.add_argument("--batch_size", default=40, type=int)      # Batch size for both actor and critic
 	parser.add_argument("--discount", default=0.99, type=float)     # Discount factor
 	parser.add_argument("--tau", default=0.005, type=float)         # Target network update rate
-	parser.add_argument("--policy_noise", default=0.2)              # Noise added to target policy during critic update
+	parser.add_argument("--policy_noise", default=0.1)              # Noise added to target policy during critic update
 	parser.add_argument("--noise_clip", default=0.5)                # Range to clip target policy noise
 	parser.add_argument("--policy_freq", default=2, type=int)       # Frequency of delayed policy updates
 	parser.add_argument("--run_name", default="CNN_Run")       # Frequency of delayed policy updates
@@ -130,12 +130,12 @@ if __name__ == "__main__":
 	episode_timesteps = 0 
 	episode_num = 0
 	total_timesteps = 0 + args.load_steps
-	expl_min = 0.1
+	expl_min = 0.05
 	expl_noise = args.expl_noise
-	expl_decay_steps = 30000
+	expl_decay_steps = 40000
 
 
-	for t in range(200000):
+	for t in range(300000):
 		
 		episode_timesteps += 1
 		total_timesteps += 1
@@ -150,9 +150,10 @@ if __name__ == "__main__":
 			action = (
 				a + np.random.normal(0, max_action * expl_noise, size=action_dim)).clip(-max_action, max_action)
 
+		# print(action)
 		# Perform action
 		next_state, reward, done, truncated, info = env.step(action)
-
+		# print(next_state)
 		# next_state_array = np.roll(next_state_array,1,axis=0)
 		# next_state_array[0] = next_state
 
