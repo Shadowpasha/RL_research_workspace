@@ -31,7 +31,7 @@ def generate_launch_description():
         # ),
 
         Node(package='td3',
-             executable='train_velodyne_node_potential.py',
+             executable='train_velodyne_node_BSRS.py',
              output='screen'
         ),
 

@@ -177,7 +177,7 @@
         <ray>
           <scan>
             <horizontal>
-              <samples>20</samples>
+              <samples>360</samples>
               <resolution>1.00000</resolution>
               <min_angle>0.0</min_angle>  <!-- 1.20000 -->
               <max_angle>6.288</max_angle> <!-- 5.210000 -->
@@ -185,7 +185,7 @@
           </scan>
           <range>
             <min>0.20000</min>
-            <max>5.5</max>
+            <max>12.5</max>
             <resolution>0.015000</resolution>
           </range>
           <noise>

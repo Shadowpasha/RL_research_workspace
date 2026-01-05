@@ -52,6 +52,8 @@ install(
     scripts/test_velodyne_node_irl.py
     scripts/test_velodyne_node_irl_transformer.py
     scripts/train_velodyne_node_transformer_pid.py
+    scripts/train_velodyne_node_BSRS.py
+    scripts/train_velodyne_node_potential_bias.py
     scripts/train_velodyne_node_boxes.py
     scripts/train_velodyne_node.py
     scripts/train_velodyne_node_variable.py

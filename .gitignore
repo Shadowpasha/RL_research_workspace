@@ -14,3 +14,11 @@ src/f4_project/f4_project/TD3/transformer_TD3/runs/
 src/f4_project/f4_project/TD3/transformer_TD3/results/
 src/f4_project/f4_project/TD3/transformer_TD3/replays/
 src/f4_project/f4_project/TD3/transformer_TD3/rewards/
+src/f4_project/f4_project/TD3/Dr.Auwalu/models/
+src/f4_project/f4_project/TD3/Dr.Auwalu/runs/
+src/f4_project/f4_project/TD3/Dr.Auwalu/rewards/
+src/f4_project/f4_project/TD3/Dr.Auwalu/replays/
+src/f4_project/f4_project/TD3/autoencoder/models/
+src/f4_project/f4_project/TD3/autoencoder/rewards/
+src/f4_project/f4_project/TD3/autoencoder/runs/
+src/f4_project/f4_project/TD3/autoencoder/replays/

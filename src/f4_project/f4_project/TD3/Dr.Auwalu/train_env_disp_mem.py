@@ -8,7 +8,7 @@ from geometry_msgs.msg import Twist
 from std_srvs.srv import Empty
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Pose, Quaternion, PoseStamped, TwistStamped, Point
-from std_msgs.msg import String, Bool
+from std_msgs.msg import String
 from std_msgs.msg import Empty as Empty_msg
 from sensor_msgs.msg import Image
 import math
@@ -37,16 +37,14 @@ class DroneGazeboEnv(gym.Env):
             depth=10
         )
        
-        if not rclpy.ok():
-            rclpy.init()
+        rclpy.init()
         self.node = rclpy.create_node("training")
-        self.goal_range = 6
-        self.obstacle_range = 6.0
-        self.num_obstacles = 10
+        self.goal_range = 3
+        self.obstacle_range = 4.5
+        self.num_obstacles = 5
         
         self.vel_pub = self.node.create_publisher(Twist,'/simple_drone/cmd_vel', 10)
         self.take_pub = self.node.create_publisher(Empty_msg,'/simple_drone/takeoff', 10)
-        self.posctrl_pub = self.node.create_publisher(Bool, '/simple_drone/posctrl', 10)
 
         self.unpause_proxy = self.node.create_client(Empty,"/unpause_physics")
         self.pause_proxy = self.node.create_client(Empty,"/pause_physics")
@@ -59,8 +57,8 @@ class DroneGazeboEnv(gym.Env):
         self.pos_sub = self.node.create_subscription(Pose,"/simple_drone/gt_pose",self.position_cb, 10)
         self.vel_sub = self.node.create_subscription(Twist,"/simple_drone/gt_vel",self.velocity_cb, 10)
         # self.sub_disparity  = self.node.create_subscription(Image,"/camera/depth/image_raw",self.get_image, 10)
-        self.sub_disparity_360  = self.node.create_subscription(LaserScan,"/simple_drone/scan",self.get_laser_360, qos_profile_laser)
-        # self.sub_disparity  = self.node.create_subscription(LaserScan,"/realsense_scan",self.get_laser, qos_profile_laser)
+        # self.sub_disparity_360  = self.node.create_subscription(LaserScan,"/simple_drone/scan",self.get_laser_360, qos_profile_laser)
+        self.sub_disparity  = self.node.create_subscription(LaserScan,"/realsense_scan",self.get_laser, qos_profile_laser)
         # self.sub_disparity_top  = self.node.create_subscription(LaserScan,"/realsense_scan_top",self.get_laser_top, qos_profile_laser)
         # self.sub_disparity_bottom  = self.node.create_subscription(LaserScan,"/realsense_scan_bottom",self.get_laser_bottom, qos_profile_laser)
 
@@ -83,7 +81,7 @@ class DroneGazeboEnv(gym.Env):
         self.reset_msg.state.name = "/simple_drone"
         self.reset_msg.state.pose.position.x = 0.0
         self.reset_msg.state.pose.position.y = 0.0
-        self.reset_msg.state.pose.position.z = 2.0
+        self.reset_msg.state.pose.position.z = 1.5
         self.image_counter = 0
 
         self.intial = True
@@ -99,7 +97,7 @@ class DroneGazeboEnv(gym.Env):
         #         'laser': spaces.Box(0.0, 1.4, shape=(30,), dtype= np.float64),
         #         'goal': spaces.Box(-8.0, 8.0,shape=(4,), dtype= np.float64)
         #             }
-        self.observation_space = spaces.Box(-8.0, 8.0, shape=(70,), dtype= np.float64)
+        self.observation_space = spaces.Box(-8.0, 8.0, shape=(34,), dtype= np.float64)
         self.laser_done_cnt = 0
         self.ep_time = time.time()
         # self.disparity_img = Image()
@@ -116,39 +114,49 @@ class DroneGazeboEnv(gym.Env):
         self.et.start()
         
         self.close = False
-        self.laser_ranges = np.ones(10)
-        self.laser_ranges_top = np.ones(10)
-        self.laser_ranges_bottom = np.ones(10)
-        self.laser_ranges_360 = np.ones(20)
-        self.goal_data = np.zeros(4)
-        self.extracted_row = np.ones(64)
-        
-        self.target_pos = Point()
-        self.target_yaw = 0.0
+        self.laser_ranges = np.zeros(10)
+        self.laser_ranges_top = np.zeros(10)
+        self.laser_ranges_bottom = np.zeros(10)
+        self.laser_ranges_360 = np.zeros(20)
+        self.goal_data = np.zeros(10)
+        self.extracted_row = np.zeros(24)
 
 
-    def get_laser(self, msg):
-        laser_ranges = np.array(msg.ranges)
-        # Handle NaN and Inf points
-        # NaN is often no return (too far), Inf is out of range (too far)
-        # In both cases, we should treat it as max range (5.0m in this scaled env)
-        laser_ranges[np.isnan(laser_ranges)] = 5.0
-        laser_ranges[np.isinf(laser_ranges)] = 5.0
-        
-        # Downsample or interpolate to 24 points as expected by observation space
-        if len(laser_ranges) != 24:
-            # Simple downsampling logic: pick 24 equidistant points
-            indices = np.linspace(0, len(laser_ranges) - 1, 24).astype(int)
-            final_laser_range = laser_ranges[indices]
-        else:
-            final_laser_range = laser_ranges
+    def get_laser(self,msg):
+        # self.cv_bridge_instance = CvBridge()
+        # depth_array = self.cv_bridge_instance.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        # normalized_depth_image_display = cv2.normalize(depth_array, None, -1.0, 1.0, cv2.NORM_MINMAX, dtype=cv2.CV_32F)
+        # resized_image_hwc = cv2.resize(normalized_depth_image_display, (24,24), interpolation=cv2.INTER_LINEAR)
+        # self.extracted_row = resized_image_hwc[12, :]
 
-        # Normalize to [0, 1] relative to 5.0m max range
-        final_laser_range = final_laser_range / 5.0
-        
-        # Clip to [0, 1] to be safe
-        self.extracted_row = np.clip(final_laser_range, 0.0, 1.0)
-        self.laser_ranges = self.extracted_row # Sink for legacy compatibility
+        # for i in range (24):
+        #     column_sum = 0
+        #     for j in range(24):
+        #         middle_row_offset = abs(j - 12)
+        #         modulation_perc = (12.0 - float(middle_row_offset))/12.0
+        #         exp_ = math.pow((1.5),10*modulation_perc)
+        #         column_sum += exp_ * resized_image_hwc[j, i]
+        #     self.extracted_row[i] = column_sum
+
+        # for i in range(24):
+        #     if np.isnan(self.extracted_row[i]):
+        #         self.extracted_row[i] = 2.0
+
+        # # cv2.imshow("array",np.array(self.extracted_row))
+        # # cv2.waitKey(1)
+
+        # # print(self.extracted_row)
+
+
+        laser_ranges = msg.ranges
+        final_laser_range = []
+        final_laser_range = np.array(laser_ranges)
+        final_laser_range[np.isnan(final_laser_range)] = 5.0
+        final_laser_range[np.isinf(final_laser_range)] = 0.2
+        final_laser_range = final_laser_range/5.0
+        # print(final_laser_range)
+        # self.laser_ranges = np.roll(self.laser_ranges,1,axis=0)
+        self.laser_ranges = final_laser_range
 
     # def get_laser_top(self,msg):
     #     laser_ranges = msg.ranges
@@ -172,25 +180,14 @@ class DroneGazeboEnv(gym.Env):
     #     # self.laser_ranges_bottom = np.roll(self.laser_ranges_bottom,1,axis=0)
     #     self.laser_ranges_bottom = final_laser_range
 
-    def get_laser_360(self,msg):
-        laser_ranges = np.array(msg.ranges)
-        # Handle NaN and Inf points (too far or no return)
-        laser_ranges[np.isnan(laser_ranges)] = 12.0
-        laser_ranges[np.isinf(laser_ranges)] = 12.0
-        
-        # Resample to 64 points
-        if len(laser_ranges) != 64:
-            indices = np.linspace(0, len(laser_ranges) - 1, 64).astype(int)
-            final_laser_range = laser_ranges[indices]
-        else:
-            final_laser_range = laser_ranges
-
-        # Normalize to [0, 1] relative to 12.0m max range
-        final_laser_range = final_laser_range / 12.0
-        
-        # Clip to [0, 1] to be safe and update extracted_row
-        self.extracted_row = np.clip(final_laser_range, 0.0, 1.0)
-        self.laser_ranges_360 = self.extracted_row # For consistency
+    # def get_laser_360(self,msg):
+    #     laser_ranges = msg.ranges
+    #     final_laser_range = []
+    #     final_laser_range = np.array(laser_ranges)
+    #     final_laser_range[np.isinf(final_laser_range)] = 5.0
+    #     final_laser_range = final_laser_range/5.0
+    #     # self.laser_ranges_360 = np.roll(self.laser_ranges_360,1,axis=0)
+    #     self.laser_ranges_360 = final_laser_range
 
     
     def node_spin(self):
@@ -224,12 +221,6 @@ class DroneGazeboEnv(gym.Env):
             self.done = True
             self.goal_reached = True
 
-    def get_current_dist_heading(self):
-        # Calculate fresh distance and heading based on CURRENT pose
-        curr_dist = math.sqrt(math.pow((self.goal[0] - self.pose.position.x),2) + math.pow((self.goal[1] - self.pose.position.y),2))
-        curr_heading = math.atan2((self.goal[1] - self.pose.position.y), self.goal[0] - self.pose.position.x)
-        return curr_dist, curr_heading
-
         if ( self.pitch > 1.57 or self.pitch < -1.57):
             for i in range(100):
                 self.reset_msg.state.pose.position.x = self.pose.position.x
@@ -251,34 +242,27 @@ class DroneGazeboEnv(gym.Env):
         return ranges
 
     def reset(self,seed=None,options=None):
-        print("RESETTING ENVIRONMENT")
-
 
         time.sleep(0.1)
         empty = Empty_msg()
         self.take_pub.publish(empty)
-
-        posctrl_msg = Bool()
-        posctrl_msg.data = True
-        self.posctrl_pub.publish(posctrl_msg)
+        # Resets the state of the environment and returns an initial observation.
+        self.clear_trees()
 
         vel_cmd = Twist()
         vel_cmd.linear.x = 0.0
         vel_cmd.linear.y = 0.0
-        vel_cmd.linear.z = 2.0
+        vel_cmd.linear.z = 0.0
         vel_cmd.angular.z = 0.0
         self.vel_pub.publish(vel_cmd)
 
-        # Resets the state of the environment and returns an initial observation.
-        self.clear_trees()
-
-    
         time.sleep(2.5)
         future = self.reset_proxy.call_async(self.reset_msg)
 
         self.goal_reached = False
         self.overshoot = False
         
+
         time.sleep(2.0)
 
         drone_pos = Pose()
@@ -294,23 +278,12 @@ class DroneGazeboEnv(gym.Env):
         # laser_combination =  np.append(self.laser_ranges_top,self.laser_ranges, self.laser_ranges_bottom, self.laser_ranges_360)
         self.closest_laser = np.min(laser_combination_level)
         # print(laser_combination)
-        # Normalize goal data: distance / 10.0, heading / pi
-        # Ensure fresh distance and heading
-        self.distance, self.goal_heading = self.get_current_dist_heading()
-        
-        # Deviation from target (initially 0 as we reset target to 0 and drone is at 0)
-        # But rigorous calculation:
-        dev_x = self.target_pos.x - self.pose.position.x
-        dev_y = self.target_pos.y - self.pose.position.y
-        
-        self.goal_data = np.array([0.0, 0.0, self.distance / 10.0, (self.goal_heading - self.trueYaw) / np.pi, dev_x, dev_y])
+        self.original_distance = math.sqrt(math.pow((self.goal[0] - self.pose.position.x),2) + math.pow((self.goal[1] - self.pose.position.y),2))
+
+        # self.goal_data = np.roll(self.goal_data,1,axis=0)
+        self.goal_data = np.array([0.0,0.0, self.distance, self.goal_heading - self.trueYaw, self.vel.linear.x, self.vel.linear.y, self.pose.position.x, self.pose.position.y, self.roll, self.pitch])
 
         self.prev_distance = self.distance
-
-        self.target_pos.x = 0.0
-        self.target_pos.y = 0.0
-        self.target_pos.z = 2.0
-        self.target_yaw = 0.0
 
         state =  np.append(laser_combination_level,self.goal_data)
         self.previous_error = 0.0
@@ -347,33 +320,11 @@ class DroneGazeboEnv(gym.Env):
         truncated = False
 
         vel_cmd = Twist()
-        # Holonomic control: increments in global X and Y
-        # Scale actions to -0.05 to 0.05m per step (Reduced from 0.1)
-        x_inc = float(action[0] * 0.05)
-        y_inc = float(action[1] * 0.05)
-
-        # Update target position directly (Yaw remains fixed)
-        self.target_pos.x += x_inc
-        self.target_pos.y += y_inc
-
-        # Clamp target position to be within 1.0m of the drone to prevent integral windup
-        # Using current pose from self.pose
-        dx = self.target_pos.x - self.pose.position.x
-        dy = self.target_pos.y - self.pose.position.y
-        dist_target = math.sqrt(dx*dx + dy*dy)
-        if dist_target > 1.0:
-            scale = 1.0 / dist_target
-            self.target_pos.x = self.pose.position.x + dx * scale
-            self.target_pos.y = self.pose.position.y + dy * scale
-        
-        # DEBUG PRINTS
-        # print(f"Action: {action}, Inc: ({x_inc:.3f}, {y_inc:.3f}), Target: ({self.target_pos.x:.3f}, {self.target_pos.y:.3f})")
-
-        # Using cmd_vel to send position commands as requested
-        vel_cmd.linear.x = self.target_pos.x
-        vel_cmd.linear.y = self.target_pos.y
-        vel_cmd.linear.z = self.target_pos.z
-        vel_cmd.angular.z = self.target_yaw 
+        # vel_cmd.linear.x = (action[0] + 1.01) * 0.05
+        vel_cmd.linear.x = float(((action[0])+ 1.0)*0.2)
+        vel_cmd.linear.y = 0.0
+        vel_cmd.linear.z = 0.0
+        vel_cmd.angular.z = float((action[1]))*0.35
         self.vel_pub.publish(vel_cmd)
 
         while not self.unpause_proxy.wait_for_service(timeout_sec=1.0):
@@ -401,36 +352,21 @@ class DroneGazeboEnv(gym.Env):
         # laser_combination =  np.append(self.laser_ranges_top,self.laser_ranges, self.laser_ranges_bottom, self.laser_ranges_360)
         self.closest_laser = np.min(laser_combination_level)
         # print(laser_combination)
+        # self.goal_data = np.roll(self.goal_data,1,axis=0)        
         
-        # Ensure fresh distance and heading for state
-        self.distance, self.goal_heading = self.get_current_dist_heading()
-        
-        # Deviation from target (NEW)
-        dev_x = self.target_pos.x - self.pose.position.x
-        dev_y = self.target_pos.y - self.pose.position.y
-
-        # Normalize goal data: distance / 10.0, heading / pi
-        self.goal_data = np.array([action[0], action[1], self.distance / 10.0, (self.goal_heading - self.trueYaw) / np.pi, dev_x, dev_y])
+        self.goal_data = np.array([action[0],action[1], self.distance, self.goal_heading - self.trueYaw, self.vel.linear.x, self.vel.linear.y, self.pose.position.x, self.pose.position.y, self.roll, self.pitch])
         # print(self.goal_heading - self.trueYaw)
         state =  np.append(laser_combination_level, self.goal_data)
         # print(state)
 
-        if(self.ep_time > 400):
+        if(self.ep_time > 200):
             self.done = True
             truncated = True
         self.ep_time+=1
 
         if not self.done:
-                # Stronger distance reward
-                reward = 50.0 * (self.prev_distance - self.distance)
+                reward = (self.prev_distance - self.distance)
                 self.prev_distance = self.distance
-
-                # Time penalty to encourage faster reaching
-                reward -= 0.05
-                
-                # Obstacle penalty
-                obstacle_penalty = -0.1 * (1.0 - self.closest_laser)**2
-                reward += obstacle_penalty
         else:
             if(self.goal_reached):
                 reward = 100.0
@@ -471,7 +407,7 @@ class DroneGazeboEnv(gym.Env):
     
 
     def clear_trees(self):
-        for i in range(1,self.num_obstacles):
+        for i in range(1,6):
             delete_req = DeleteEntity.Request()
             delete_req.name = "pine_tree_" + str(i)
             future = self.del_model_prox.call_async(delete_req)
@@ -489,13 +425,13 @@ class DroneGazeboEnv(gym.Env):
     def randomize_trees(self):
         
         print("randomizing")
-        for i in range(1,self.num_obstacles):
+        for i in range(1,6):
             tree_ok = False
             tree_x = 0.0
             tree_y = 0.0
             while not tree_ok:
-                tree_x = random.uniform(-self.obstacle_range,self.obstacle_range)
-                tree_y = random.uniform(-self.obstacle_range,self.obstacle_range)
+                tree_x = random.uniform(-4.5,4.5)
+                tree_y = random.uniform(-4.5,4.5)
                 tree_ok = self.check_pos(tree_x,tree_y)
             
             tree = random.randint(0,1)
@@ -531,7 +467,7 @@ class DroneGazeboEnv(gym.Env):
             
         goal_ok = False
         while not goal_ok:
-            self.goal = [random.uniform(-self.goal_range,self.goal_range),random.uniform(-self.goal_range,self.goal_range)]
+            self.goal = [random.uniform(-3.0,3.0),random.uniform(-3.0,3.0)]
             goal_ok = self.check_pos_goal(self.goal[0],self.goal[1])
 
 

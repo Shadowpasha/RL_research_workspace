@@ -4,15 +4,14 @@ import gymnasium as gym
 import argparse
 import os
 from datetime import datetime
-import utils
-import TD3
+import utils_CNN
+import TD3_Autoencoder
 from torch.utils.tensorboard import SummaryWriter
 
-from train_env_disp_mem import DroneGazeboEnv
 import random
 gym.register(
     id='GazeboIrisEnv-v0',
-    entry_point='train_env_disp_mem:DroneGazeboEnv', 
+    entry_point='train_env_disp_mem_CNN:DroneGazeboEnv', 
 )
 
 # # Runs policy for X episodes and returns average reward
@@ -43,16 +42,16 @@ if __name__ == "__main__":
 	parser.add_argument("--policy", default="TD3")                  # Policy name (TD3, DDPG or OurDDPG)
 	parser.add_argument("--env", default="GazeboIrisEnv-v0")          # OpenAI gym environment name
 	parser.add_argument("--seed", default=random.randint(0,9999), type=int)              # Sets Gym, PyTorch and Numpy seeds
-	parser.add_argument("--start_timesteps", default=10000, type=int)# Time steps initial random policy is used
+	parser.add_argument("--start_timesteps", default=20000, type=int)# Time steps initial random policy is used
 	parser.add_argument("--eval_freq", default=526, type=int)       # How often (time steps) we evaluate
-	parser.add_argument("--expl_noise", default=0.3, type=float)    # Std of Gaussian exploration noise
-	parser.add_argument("--batch_size", default=128, type=int)      # Batch size for both actor and critic
+	parser.add_argument("--expl_noise", default=1.0, type=float)    # Std of Gaussian exploration noise
+	parser.add_argument("--batch_size", default=40, type=int)      # Batch size for both actor and critic
 	parser.add_argument("--discount", default=0.99, type=float)     # Discount factor
 	parser.add_argument("--tau", default=0.005, type=float)         # Target network update rate
-	parser.add_argument("--policy_noise", default=0.2)              # Noise added to target policy during critic update
+	parser.add_argument("--policy_noise", default=0.1)              # Noise added to target policy during critic update
 	parser.add_argument("--noise_clip", default=0.5)                # Range to clip target policy noise
 	parser.add_argument("--policy_freq", default=2, type=int)       # Frequency of delayed policy updates
-	parser.add_argument("--run_name", default="normal")       # Frequency of delayed policy updates
+	parser.add_argument("--run_name", default="Autoencoder_Run")       # Frequency of delayed policy updates
 	parser.add_argument("--load_model", default="")    # Model load file name, "" doesn't load, "default" uses file_name
 	parser.add_argument("--load_steps", default=0)
 	args = parser.parse_args()
@@ -82,8 +81,8 @@ if __name__ == "__main__":
 	# env.action_space.seed(args.seed)
 	# torch.manual_seed(args.seed)
 	# np.random.seed(args.seed)
-	
-	state_dim = 70
+	input_image_shape = (1,32,32)
+	goal_dim = 4
 	action_dim = 2
 	max_action = 1.0
 	rewards = np.ones(10)
@@ -98,21 +97,24 @@ if __name__ == "__main__":
 		writer = SummaryWriter("runs/" + file_name)
 
 	kwargs = {
-		"state_dim": state_dim,
+		"input_image_shape": input_image_shape,
+		"goal_dim": goal_dim,
 		"action_dim": action_dim,
 		"max_action": max_action,
 		"discount": args.discount,
 		"tau": args.tau,
 	}
 
-	replay_buffer = utils.ReplayBuffer(state_dim, action_dim)
+	replay_buffer = utils_CNN.ReplayBuffer(input_image_shape, goal_dim, action_dim)
 	# Initialize policy
 	if args.policy == "TD3":
 		# Target policy smoothing is scaled wrt the action scale
 		kwargs["policy_noise"] = args.policy_noise * max_action
 		kwargs["noise_clip"] = args.noise_clip * max_action
 		kwargs["policy_freq"] = args.policy_freq
-		policy = TD3.TD3(**kwargs)
+		print("here")
+		policy = TD3_Autoencoder.TD3(**kwargs)
+		print("here")
 
 	if args.load_model != "":
 		policy_file = file_name if args.load_model == "" else args.load_model
@@ -129,12 +131,12 @@ if __name__ == "__main__":
 	episode_timesteps = 0 
 	episode_num = 0
 	total_timesteps = 0 + args.load_steps
-	expl_min = 0.1
+	expl_min = 0.05
 	expl_noise = args.expl_noise
 	expl_decay_steps = 100000
 
 
-	for t in range(150000):
+	for t in range(300000):
 		
 		episode_timesteps += 1
 		total_timesteps += 1
@@ -145,19 +147,21 @@ if __name__ == "__main__":
 		else:
 			if expl_noise > expl_min:
 				expl_noise = expl_noise - ((1 - expl_min) / expl_decay_steps)
-			a = policy.select_action(np.array(state))
-			action = (a + np.random.normal(0, max_action * expl_noise, size=action_dim)).clip(-max_action, max_action)
+			a = policy.select_action(state)
+			action = (
+				a + np.random.normal(0, max_action * expl_noise, size=action_dim)).clip(-max_action, max_action)
 
+		# print(action)
 		# Perform action
 		next_state, reward, done, truncated, info = env.step(action)
-
+		# print(next_state)
 		# next_state_array = np.roll(next_state_array,1,axis=0)
 		# next_state_array[0] = next_state
 
 		done_bool = float(done)
 
 		# Store data in replay buffer
-		replay_buffer.add(state, action, next_state, reward, done_bool)
+		replay_buffer.add(state["image"],state["goal"], action, next_state["image"], next_state["goal"] , reward, done_bool)
 
 		state = next_state
 		episode_reward += reward
@@ -175,7 +179,6 @@ if __name__ == "__main__":
 				rewards[0] = -100
 			avg_reward = np.sum(rewards,axis=0)/10.0
 			writer.add_scalar("training/average_raward",avg_reward, total_timesteps)
-			writer.add_scalar("training/episode_reward", episode_reward, total_timesteps)
 			
 			print(f"Total Timesteps: {total_timesteps} Episode Num: {episode_num+1} Episode Timesteps: {episode_timesteps} Reward: {episode_reward:.3f} Average Reward: {avg_reward:.3f}")
 			# Reset environment
