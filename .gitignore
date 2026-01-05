@@ -1,6 +1,9 @@
 build/
 install/
 log/
+pytorch_models/
+results/
+runs/
 src/td3/scripts/runs/
 src/td3/scripts/pytorch_models/
 src/td3/scripts/results/
