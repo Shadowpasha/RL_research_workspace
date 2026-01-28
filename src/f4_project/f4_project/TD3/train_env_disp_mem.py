@@ -42,7 +42,7 @@ class DroneGazeboEnv(gym.Env):
         self.node = rclpy.create_node("training")
         self.goal_range = 6
         self.obstacle_range = 6.0
-        self.num_obstacles = 10
+        self.num_obstacles = 6
         
         self.vel_pub = self.node.create_publisher(Twist,'/simple_drone/cmd_vel', 10)
         self.take_pub = self.node.create_publisher(Empty_msg,'/simple_drone/takeoff', 10)
@@ -109,6 +109,9 @@ class DroneGazeboEnv(gym.Env):
         pose.position.x = 0.0
         pose.position.y = 0.0
         self.tree_locations.append(pose)
+        
+        # Random start range
+        self.start_range = 3.0
         self.executor = MultiThreadedExecutor()
         self.executor.add_node(self.node)
 
@@ -255,8 +258,9 @@ class DroneGazeboEnv(gym.Env):
 
 
         time.sleep(0.1)
-        empty = Empty_msg()
-        self.take_pub.publish(empty)
+        for i in range(5):
+            empty = Empty_msg()
+            self.take_pub.publish(empty)
 
         posctrl_msg = Bool()
         posctrl_msg.data = True
@@ -273,7 +277,7 @@ class DroneGazeboEnv(gym.Env):
         self.clear_trees()
 
     
-        time.sleep(2.5)
+        time.sleep(5.5)
         future = self.reset_proxy.call_async(self.reset_msg)
 
         self.goal_reached = False
@@ -282,9 +286,47 @@ class DroneGazeboEnv(gym.Env):
         time.sleep(2.0)
 
         drone_pos = Pose()
-        drone_pos.position.x = 0.0
-        drone_pos.position.y = 0.0
+        
+        # Randomize start position
+        start_x = random.uniform(-self.start_range, self.start_range)
+        start_y = random.uniform(-self.start_range, self.start_range)
+        
+        # Update reset message for next reset call (or if we needed to call it again)
+        # Actually we need to teleport the drone NOW if we want it to start there, 
+        # but reset_proxy was already called above.
+        # We should update reset_msg BEFORE calling reset_proxy. 
+        # Let's fix the order or call it again.
+        
+        # Since we already called reset_proxy at line 278 with old coords (0,0), let's call it again or move this logic up.
+        # Ideally we move it up, but to minimize diff noise let's just call it again efficiently.
+        # Actually, let's just update the reset_msg and call it.
+        
+        self.reset_msg.state.pose.position.x = start_x
+        self.reset_msg.state.pose.position.y = start_y
+        
+        # Teleport drone to random start
+        future = self.reset_proxy.call_async(self.reset_msg)
+        time.sleep(0.5) # Wait for teleport
+
+        drone_pos.position.x = start_x
+        drone_pos.position.y = start_y
         self.tree_locations[0] = drone_pos
+        
+        # FIX: Sync target position with actual start position so it doesn't fly back to 0,0
+        self.target_pos.x = start_x
+        self.target_pos.y = start_y
+        self.target_pos.z = 2.0
+        
+        # Send this setpoint immediately
+        vel_cmd = Twist()
+        vel_cmd.linear.x = self.target_pos.x
+        vel_cmd.linear.y = self.target_pos.y
+        vel_cmd.linear.z = self.target_pos.z
+        vel_cmd.angular.z = self.target_yaw 
+        self.vel_pub.publish(vel_cmd)
+
+        time.sleep(2.5)
+
         self.randomize_trees()
         
         # laser_combination_level = np.append(self.laser_ranges,self.laser_ranges_360)
@@ -307,9 +349,9 @@ class DroneGazeboEnv(gym.Env):
 
         self.prev_distance = self.distance
 
-        self.target_pos.x = 0.0
-        self.target_pos.y = 0.0
-        self.target_pos.z = 2.0
+        # self.target_pos.x = 0.0   <-- REMOVED: Don't overwrite random start
+        # self.target_pos.y = 0.0   <-- REMOVED
+        # self.target_pos.z = 2.0   <-- Already set above
         self.target_yaw = 0.0
 
         state =  np.append(laser_combination_level,self.goal_data)
@@ -349,22 +391,16 @@ class DroneGazeboEnv(gym.Env):
         vel_cmd = Twist()
         # Holonomic control: increments in global X and Y
         # Scale actions to -0.05 to 0.05m per step (Reduced from 0.1)
-        x_inc = float(action[0] * 0.05)
-        y_inc = float(action[1] * 0.05)
+        x_inc = float(action[0] * 0.1)
+        y_inc = float(action[1] * 0.1)
 
         # Update target position directly (Yaw remains fixed)
-        self.target_pos.x += x_inc
-        self.target_pos.y += y_inc
+        # FIX: Relative to CURRENT position to prevent stacking/windup
+        self.target_pos.x = self.pose.position.x + x_inc
+        self.target_pos.y = self.pose.position.y + y_inc
 
-        # Clamp target position to be within 1.0m of the drone to prevent integral windup
-        # Using current pose from self.pose
-        dx = self.target_pos.x - self.pose.position.x
-        dy = self.target_pos.y - self.pose.position.y
-        dist_target = math.sqrt(dx*dx + dy*dy)
-        if dist_target > 1.0:
-            scale = 1.0 / dist_target
-            self.target_pos.x = self.pose.position.x + dx * scale
-            self.target_pos.y = self.pose.position.y + dy * scale
+        # Clamp target position is no longer needed for windup, but good for safety if we wanted to limit max speed 
+        # (implicit by x_inc limit).
         
         # DEBUG PRINTS
         # print(f"Action: {action}, Inc: ({x_inc:.3f}, {y_inc:.3f}), Target: ({self.target_pos.x:.3f}, {self.target_pos.y:.3f})")
@@ -415,14 +451,15 @@ class DroneGazeboEnv(gym.Env):
         state =  np.append(laser_combination_level, self.goal_data)
         # print(state)
 
-        if(self.ep_time > 400):
+        if(self.ep_time > 500):
             self.done = True
             truncated = True
         self.ep_time+=1
 
         if not self.done:
                 # Stronger distance reward
-                reward = 50.0 * (self.prev_distance - self.distance)
+                # Scaled down to 10.0 (was 50.0) to prevent overshadowing the goal reward
+                reward = 10.0 * (self.prev_distance - self.distance)
                 self.prev_distance = self.distance
 
                 # Time penalty to encourage faster reaching
@@ -431,10 +468,15 @@ class DroneGazeboEnv(gym.Env):
                 # Obstacle penalty
                 obstacle_penalty = -0.1 * (1.0 - self.closest_laser)**2
                 reward += obstacle_penalty
+
         else:
             if(self.goal_reached):
                 reward = 100.0
+            elif truncated:
+                # Timeout penalty (softer than crash)
+                reward = -10.0
             else:
+                # Crash penalty
                 reward = -100.0
         
         return state, reward, self.done, truncated, {"reached":self.goal_reached}

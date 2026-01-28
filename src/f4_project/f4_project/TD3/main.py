@@ -37,16 +37,18 @@ gym.register(
 # 	return avg_reward
 
 
+import math # Added for straight_line mode
+
 if __name__ == "__main__":
 	
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--policy", default="TD3")                  # Policy name (TD3, DDPG or OurDDPG)
 	parser.add_argument("--env", default="GazeboIrisEnv-v0")          # OpenAI gym environment name
 	parser.add_argument("--seed", default=random.randint(0,9999), type=int)              # Sets Gym, PyTorch and Numpy seeds
-	parser.add_argument("--start_timesteps", default=10000, type=int)# Time steps initial random policy is used
+	parser.add_argument("--start_timesteps", default=25000, type=int)# Time steps initial random policy is used
 	parser.add_argument("--eval_freq", default=526, type=int)       # How often (time steps) we evaluate
-	parser.add_argument("--expl_noise", default=0.3, type=float)    # Std of Gaussian exploration noise
-	parser.add_argument("--batch_size", default=128, type=int)      # Batch size for both actor and critic
+	parser.add_argument("--expl_noise", default=1.0, type=float)    # Std of Gaussian exploration noise
+	parser.add_argument("--batch_size", default=256, type=int)      # Batch size for both actor and critic
 	parser.add_argument("--discount", default=0.99, type=float)     # Discount factor
 	parser.add_argument("--tau", default=0.005, type=float)         # Target network update rate
 	parser.add_argument("--policy_noise", default=0.2)              # Noise added to target policy during critic update
@@ -55,6 +57,7 @@ if __name__ == "__main__":
 	parser.add_argument("--run_name", default="normal")       # Frequency of delayed policy updates
 	parser.add_argument("--load_model", default="")    # Model load file name, "" doesn't load, "default" uses file_name
 	parser.add_argument("--load_steps", default=0)
+	parser.add_argument("--straight_line", action="store_true", default=True) # Enable straight-line exploration
 	args = parser.parse_args()
 
 	datetime_now = datetime.now().strftime('%d_%m_%Y_%H_%M')
@@ -141,7 +144,26 @@ if __name__ == "__main__":
 		# Select action randomly or according to policy
 	
 		if total_timesteps < args.start_timesteps:
-			action = env.action_space.sample()
+			if args.straight_line:
+				# Straight Line Exploration: Move towards goal
+				# Access underlying env to get goal and pose (bypass Grid wrappers if any)
+				# Assuming env is DroneGazeboEnv or similar
+				raw_env = env.unwrapped
+				try:
+					dx = raw_env.goal[0] - raw_env.pose.position.x
+					dy = raw_env.goal[1] - raw_env.pose.position.y
+					dist = math.sqrt(dx*dx + dy*dy)
+					if dist > 0.1:
+						# Normalize to unit vector (Max speed)
+						# The env scales this by 0.1 to get position increment, ensuring gradual movement
+						action = np.array([dx/dist, dy/dist])
+					else:
+						action = np.zeros(action_dim)
+				except AttributeError:
+					print("Warning: Could not access goal/pose for straight_line mode. Defaulting to random.")
+					action = env.action_space.sample()
+			else:
+				action = env.action_space.sample()
 		else:
 			if expl_noise > expl_min:
 				expl_noise = expl_noise - ((1 - expl_min) / expl_decay_steps)

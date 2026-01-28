@@ -49,7 +49,7 @@ if __name__ == "__main__":
     parser.add_argument("--policy", default="TD3")                  # Policy name (TD3, DDPG or OurDDPG)
     parser.add_argument("--env", default="GazeboIrisEnv-v0")        # OpenAI gym environment name
     parser.add_argument("--seed", default=0, type=int)              # Sets Gym, PyTorch and Numpy seeds
-    parser.add_argument("--load_model", default="", required=True)  # Model load file name, required
+    parser.add_argument("--load_model", default="normal_21_01_2026_13_23")  # Model load file name, required
     parser.add_argument("--episodes", default=10, type=int)         # Number of episodes to evaluate
     args = parser.parse_args()
     
